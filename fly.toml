@@ -1,0 +1,16 @@
+app = "patent-draft-pro-api"
+primary_region = "bom"
+
+[build]
+  dockerfile = "Dockerfile.backend"
+
+[http_service]
+  internal_port = 5012
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 1
+
+[env]
+  RUST_LOG = "info"
+  PORT = "5012"

@@ -1,0 +1,36 @@
+name: Rust CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: patent_draft_pro_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/patent_draft_pro_test
+      JWT_SECRET: test-secret-for-ci-only-64-chars-long-enough
+      AI_PROVIDER: mock
+      STORAGE_BACKEND: local
+      STORAGE_LOCAL_PATH: /tmp/patent-test-storage
+      RAZORPAY_KEY_ID: rzp_test_ci
+      RAZORPAY_KEY_SECRET: test
+      RAZORPAY_WEBHOOK_SECRET: test
+      RAZORPAY_PLAN_ID: plan_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install sqlx-cli --no-default-features --features postgres
+      - run: sqlx migrate run --source migrations --database-url $DATABASE_URL
+      - run: cargo test --workspace
+        working-directory: backend

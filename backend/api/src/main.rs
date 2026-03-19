@@ -2,7 +2,7 @@ mod error;
 mod middleware;
 mod routes;
 
-use axum::{middleware as axum_mw, routing::{get, post}, Router};
+use axum::{middleware as axum_mw, routing::{delete, get, patch, post, put}, Router};
 use clap::{Parser, Subcommand};
 use shared::config::AppConfig;
 use shared::db::create_pool;
@@ -78,6 +78,27 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(pool.clone());
 
+    // Routes that need auth + active subscription
+    let protected_routes = Router::new()
+        .route("/api/projects", get(routes::projects::list_projects))
+        .route("/api/projects", post(routes::projects::create_project))
+        .route("/api/projects/{id}", get(routes::projects::get_project))
+        .route("/api/projects/{id}", patch(routes::projects::update_project))
+        .route("/api/projects/{id}", delete(routes::projects::delete_project))
+        .route("/api/projects/{id}/applicant", put(routes::applicants::upsert_applicant))
+        .route("/api/projects/{id}/applicant", get(routes::applicants::get_applicant))
+        .route("/api/projects/{id}/interview", put(routes::interview::save_interview))
+        .route("/api/projects/{id}/interview", get(routes::interview::get_interview))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::subscription::subscription_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .with_state(pool.clone());
+
     let cors = CorsLayer::new()
         .allow_origin(
             config
@@ -98,6 +119,7 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .merge(public_routes)
         .merge(auth_only_routes)
+        .merge(protected_routes)
         .layer(cors);
 
     let addr = format!("0.0.0.0:{}", config.port);

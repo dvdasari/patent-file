@@ -21,8 +21,8 @@ Similar to [ipauthor.com](https://ipauthor.com) but focused on the Indian patent
 - AI patent drafting (guided interview → AI-generated draft → section editor → export)
 - IPO jurisdiction (provisional + complete specifications, Form 2 format)
 - Solo practitioner accounts (single user, no teams)
-- Email/password authentication (private — no public signup for MVP)
-- Stripe subscription billing (single plan, pricing TBD by client)
+- Email/password authentication (private — no public signup for MVP), self-managed in Rust (argon2 + JWT)
+- Razorpay subscription billing (single plan, INR pricing, UPI + cards)
 - PDF + DOCX export formatted to IPO standards
 - Provider-agnostic AI (Claude default, swappable)
 
@@ -61,15 +61,15 @@ Similar to [ipauthor.com](https://ipauthor.com) but focused on the Indian patent
 ```
 ┌─────────────────────────────────────────────────────────┐
 │                      FRONTEND                            │
-│              Next.js 15 (App Router)                     │
-│              Vercel (free tier)                           │
+│              Next.js 16 (App Router)                     │
+│              Vercel                                      │
 │                                                          │
 │  ┌──────────┐  ┌──────────────┐  ┌──────────────────┐  │
 │  │  Login   │  │  Interview   │  │  Draft Editor     │  │
 │  │  Page    │  │  Wizard      │  │  (Section Cards)  │  │
 │  └──────────┘  └──────────────┘  └──────────────────┘  │
 │                        │                    │            │
-│              AI SDK (streaming)     REST API calls       │
+│                    REST API calls + SSE streaming        │
 └────────────────────────┼────────────────────┼───────────┘
                          │                    │
                     HTTPS (JSON + SSE)
@@ -77,23 +77,27 @@ Similar to [ipauthor.com](https://ipauthor.com) but focused on the Indian patent
 ┌────────────────────────┼────────────────────┼───────────┐
 │                      BACKEND                             │
 │                 Rust (Axum)                               │
-│                 Fly.io                                    │
+│                 Fly.io (Mumbai region)                    │
 │                                                          │
 │  ┌──────────┐  ┌──────────────┐  ┌──────────────────┐  │
 │  │  Auth    │  │  AI Service  │  │  Export Service   │  │
-│  │  (JWT)   │  │  (LLM calls) │  │  (PDF/DOCX gen)  │  │
+│  │ (argon2  │  │  (LLM calls) │  │  (PDF/DOCX gen)  │  │
+│  │  + JWT)  │  │              │  │                   │  │
 │  └──────────┘  └──────────────┘  └──────────────────┘  │
-│                        │                                 │
-│                   ┌────┴────┐                            │
-│                   │  sqlx   │                            │
-│                   └────┬────┘                            │
+│       │               │                    │            │
+│  ┌────┴───────────────┴────────────────────┴─────┐     │
+│  │              sqlx (single DB writer)           │     │
+│  └────────────────────┬──────────────────────────┘     │
+│                        │                                │
+│  ┌─────────────────────┤  ┌──────────────────────────┐ │
+│  │  Razorpay webhooks  │  │  StorageClient           │ │
+│  │  (signature verify) │  │  (Local FS dev / R2 prod)│ │
+│  └─────────────────────┘  └──────────────────────────┘ │
 └────────────────────────┼────────────────────────────────┘
                          │
               ┌──────────┴──────────┐
-              │  Supabase           │
-              │  - Postgres (DB)    │
-              │  - Auth (JWT)       │
-              │  - Storage (files)  │
+              │  Supabase Postgres  │
+              │  (managed DB only)  │
               └─────────────────────┘
 ```
 
@@ -101,25 +105,52 @@ Similar to [ipauthor.com](https://ipauthor.com) but focused on the Indian patent
 
 1. **AI calls go through Rust backend** — not directly from frontend. Controls rate limiting, prompt engineering, and token usage server-side.
 2. **Streaming via SSE** — AI-generated text streams from Rust → Next.js frontend so users see text appear in real-time.
-3. **Supabase for managed services** — Auth (JWT issuance), Postgres (data), Storage (exported files). Rust connects to Postgres directly via sqlx.
+3. **Postgres via Docker locally, Supabase in production** — Rust connects via sqlx. No Supabase Auth, no Supabase Storage. Auth is self-managed in Rust (argon2 password hashing + JWT issuance). File storage uses Cloudflare R2 in production, local filesystem in development.
 4. **Provider-agnostic AI layer** — trait-based abstraction in Rust. Start with Claude (Anthropic), stub OpenAI. Swap or A/B test providers via config.
-5. **Stripe webhook on Next.js** — webhook handler lives in Next.js API route (Vercel serverless function) since it's lightweight and avoids exposing the Rust backend to Stripe directly.
+5. **All webhooks in Rust** — Razorpay webhooks are handled by the Rust backend directly. Single DB writer (sqlx), no split-brain between frontend and backend database access.
+6. **Cloudflare R2 for file storage (production)** — S3-compatible API, zero egress fees. Stores exported PDFs/DOCX files and uploaded figure images. In local development, a `LocalStorage` backend writes files to `./storage/` on disk — no R2 credentials needed.
+7. **Application-level rate limiting** — per-user limits on expensive operations (AI generation, export) enforced in Rust middleware. Vercel Firewall provides edge-level rate limiting on frontend routes.
+8. **CORS locked to frontend origin** — configured via `ALLOWED_ORIGIN` environment variable (`http://localhost:3000` for local dev, production Vercel URL in prod). The Rust backend uses `CorsLayer` with `allow_credentials(true)` so httpOnly cookies are sent cross-origin. Never use `CorsLayer::permissive()` — it disables credential support.
+9. **Soft-delete for projects** — projects use a `deleted_at` column instead of hard DELETE. Patent drafts represent hours of user work; accidental deletion must be recoverable. Cascade deletes only occur when a user explicitly purges from a "Trash" view (post-MVP) or after 30 days.
 
 ---
 
 ## 4. Database Schema
 
+**Note:** All tables with `updated_at` columns use a shared Postgres trigger function (`set_updated_at()`) that automatically sets `updated_at = now()` on every UPDATE. This is created in migration 001 before any table definitions. The application layer does NOT need to set `updated_at` manually.
+
 ```sql
--- Users (mirrors Supabase Auth key fields)
+-- Auto-update trigger (applied to all tables with updated_at)
+CREATE OR REPLACE FUNCTION set_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = now();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Users (self-managed auth — no Supabase Auth dependency)
 CREATE TABLE users (
-    id              UUID PRIMARY KEY,  -- from Supabase Auth
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     email           TEXT UNIQUE NOT NULL,
+    password_hash   TEXT NOT NULL,  -- argon2 hash
     full_name       TEXT NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Patent projects (one per invention)
+-- Sessions (server-side refresh token tracking + revocation)
+CREATE TABLE sessions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    refresh_token_hash TEXT NOT NULL,   -- SHA-256 hash of the refresh token (never store raw)
+    expires_at      TIMESTAMPTZ NOT NULL,
+    revoked         BOOLEAN NOT NULL DEFAULT false,
+    user_agent      TEXT,               -- browser/device info for session management
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Patent projects (one per invention — soft-delete via deleted_at)
 CREATE TABLE projects (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES users(id),
@@ -129,8 +160,30 @@ CREATE TABLE projects (
     jurisdiction    TEXT NOT NULL DEFAULT 'IPO',
     patent_type     TEXT NOT NULL DEFAULT 'complete',
         -- 'provisional' | 'complete'
+    deleted_at      TIMESTAMPTZ,  -- NULL = active, set = soft-deleted
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Applicant/filing metadata (required for IPO Form 2 title page)
+CREATE TABLE project_applicants (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    applicant_name  TEXT NOT NULL,
+    applicant_address TEXT NOT NULL,
+    applicant_nationality TEXT NOT NULL DEFAULT 'Indian',
+    inventor_name   TEXT NOT NULL,
+    inventor_address TEXT NOT NULL,
+    inventor_nationality TEXT NOT NULL DEFAULT 'Indian',
+    agent_name      TEXT,               -- patent agent name (optional if self-filing)
+    agent_registration_no TEXT,         -- IPO agent registration number
+    assignee_name   TEXT,               -- if different from applicant
+    priority_date   DATE,               -- priority claim date (if any)
+    priority_country TEXT,              -- priority claim country
+    priority_application_no TEXT,       -- priority application number
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(project_id)                  -- one applicant record per project
 );
 
 -- Interview responses (structured invention disclosure)
@@ -161,13 +214,24 @@ CREATE TABLE patent_sections (
     UNIQUE(project_id, section_type)
 );
 
+-- Section versions (history for undo/restore)
+CREATE TABLE section_versions (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    section_id      UUID NOT NULL REFERENCES patent_sections(id) ON DELETE CASCADE,
+    content         TEXT NOT NULL,
+    version_number  INT NOT NULL,
+    source          TEXT NOT NULL DEFAULT 'manual',  -- 'manual' | 'ai_generated' | 'ai_regenerated'
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE(section_id, version_number)
+);
+
 -- Figures (uploaded invention sketches/diagrams)
 CREATE TABLE figures (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     sort_order      INT NOT NULL DEFAULT 0,
     description     TEXT NOT NULL,  -- user-provided figure description
-    storage_path    TEXT NOT NULL,  -- Supabase Storage path
+    storage_path    TEXT NOT NULL,  -- storage key (local path or R2 object key)
     file_name       TEXT NOT NULL,
     content_type    TEXT NOT NULL,  -- e.g., 'image/png'
     file_size_bytes BIGINT NOT NULL,
@@ -179,34 +243,49 @@ CREATE TABLE exports (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     project_id      UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     format          TEXT NOT NULL,  -- 'pdf' | 'docx'
-    storage_path    TEXT NOT NULL,
+    storage_path    TEXT NOT NULL,  -- storage key (local path or R2 object key)
     file_size_bytes BIGINT NOT NULL,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- Subscriptions (Stripe state cached locally)
+-- Subscriptions (Razorpay state cached locally)
 CREATE TABLE subscriptions (
-    id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id                  UUID NOT NULL REFERENCES users(id),
-    stripe_customer_id       TEXT NOT NULL,
-    stripe_subscription_id   TEXT NOT NULL UNIQUE,
-    plan_id                  TEXT NOT NULL,
-    status                   TEXT NOT NULL DEFAULT 'active',
-        -- 'active' | 'canceled' | 'past_due' | 'trialing'
-    current_period_start     TIMESTAMPTZ NOT NULL,
-    current_period_end       TIMESTAMPTZ NOT NULL,
-    created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+    id                          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                     UUID NOT NULL REFERENCES users(id),
+    razorpay_customer_id        TEXT NOT NULL,
+    razorpay_subscription_id    TEXT NOT NULL UNIQUE,
+    plan_id                     TEXT NOT NULL,
+    status                      TEXT NOT NULL DEFAULT 'active',
+        -- 'active' | 'cancelled' | 'past_due' | 'halted' | 'created'
+    current_period_start        TIMESTAMPTZ NOT NULL,
+    current_period_end          TIMESTAMPTZ NOT NULL,
+    created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Rate limit tracking (per-user, per-action)
+CREATE TABLE rate_limits (
+    id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id         UUID NOT NULL REFERENCES users(id),
+    action_type     TEXT NOT NULL,  -- 'generate' | 'regenerate' | 'export'
+    window_start    TIMESTAMPTZ NOT NULL,
+    request_count   INT NOT NULL DEFAULT 1,
+    UNIQUE(user_id, action_type, window_start)
 );
 
 -- Indexes
-CREATE INDEX idx_projects_user_id ON projects(user_id);
+CREATE INDEX idx_sessions_user_id ON sessions(user_id);
+CREATE INDEX idx_sessions_refresh_token_hash ON sessions(refresh_token_hash) WHERE NOT revoked;
+CREATE INDEX idx_projects_user_id ON projects(user_id) WHERE deleted_at IS NULL;
+CREATE INDEX idx_project_applicants_project_id ON project_applicants(project_id);
 CREATE INDEX idx_interview_responses_project_id ON interview_responses(project_id);
 CREATE INDEX idx_patent_sections_project_id ON patent_sections(project_id);
+CREATE INDEX idx_section_versions_section_id ON section_versions(section_id);
 CREATE INDEX idx_figures_project_id ON figures(project_id);
 CREATE INDEX idx_exports_project_id ON exports(project_id);
 CREATE INDEX idx_subscriptions_user_id ON subscriptions(user_id);
-CREATE INDEX idx_subscriptions_stripe_subscription_id ON subscriptions(stripe_subscription_id);
+CREATE INDEX idx_subscriptions_razorpay_sub_id ON subscriptions(razorpay_subscription_id);
+CREATE INDEX idx_rate_limits_user_action ON rate_limits(user_id, action_type, window_start);
 ```
 
 ---
@@ -221,42 +300,60 @@ CREATE INDEX idx_subscriptions_stripe_subscription_id ON subscriptions(stripe_su
 - Patent type: Provisional or Complete (radio)
 - Technical field (dropdown + custom: Mechanical, Software, Chemical, Electrical, Biotech, Other)
 
-**Step 2: Problem & Prior Art**
+**Step 2: Applicant & Filing Details**
+
+- Applicant name (text)
+- Applicant address (textarea)
+- Applicant nationality (dropdown, default: Indian)
+- Inventor name (text, can be same as applicant)
+- Inventor address (textarea)
+- Inventor nationality (dropdown, default: Indian)
+- Patent agent name (optional text — blank if self-filing)
+- Agent registration number (optional text)
+- Assignee name (optional text — if different from applicant)
+- Priority claim: date, country, application number (all optional)
+
+> **Note:** This step saves to `project_applicants` table (not `interview_responses`). This data populates the IPO Form 2 title page on export and is NOT sent to the AI pipeline.
+
+**Step 3: Problem & Prior Art**
 
 - What problem does this invention solve? (textarea)
 - How is this problem currently solved? (textarea)
 - What are the limitations of existing solutions? (textarea)
 
-**Step 3: Invention Description**
+**Step 4: Invention Description**
 
 - Describe your invention in plain language (textarea)
 - What are the key components/elements? (textarea)
 - How do the components work together? Step-by-step process (textarea)
 
-**Step 4: Novelty & Advantages**
+**Step 5: Novelty & Advantages**
 
 - What is new/novel about your invention vs. prior art? (textarea)
 - What are the advantages/benefits? (textarea)
 - Are there alternative embodiments? (optional textarea)
 
-**Step 5: Figures (optional)**
+**Step 6: Figures (optional)**
 
 - Upload sketches/diagrams (image upload, multiple)
 - Brief description of each figure (text per image)
 
-**Step 6: Review & Generate**
+**Step 7: Review & Generate**
 
-- Summary of all responses (editable)
+- Summary of all responses (editable, grouped by step)
+- Applicant details summary (read-only, "Edit" links back to Step 2)
 - "Generate Patent Draft" button
 - Estimated generation time: ~60-90 seconds
 
 ### Behavior
 
-- Each step saves to `interview_responses` on navigation (auto-save)
+- Steps 1 and 3-5 save to `interview_responses` on navigation (auto-save)
+- Step 2 saves to `project_applicants` on navigation (auto-save)
+- Step 6 saves figures via `StorageClient` + `figures` table on upload
 - User can navigate back to any completed step
 - Browser close/refresh resumes at last completed step
-- Step 6 shows all responses for final review before generation
-- "Generate" button disabled until all required fields in Steps 1-4 are complete
+- Step 7 shows all responses for final review before generation
+- "Generate" button disabled until all required fields in Steps 1-5 are complete
 
 ---
 
@@ -274,7 +371,9 @@ CREATE INDEX idx_subscriptions_stripe_subscription_id ON subscriptions(stripe_su
    - f) Claims (independent first, then dependent)
    - g) Abstract (summarizes claims + description)
    - h) Drawings Description (from uploaded figures or generated from text — figure descriptions from the `figures` table are included in the prompt context; images are NOT sent to the LLM for MVP, only their text descriptions)
-3. **Cross-Reference Pass** — lightweight LLM call to ensure claim terms match specification, figure references are consistent, antecedent basis is correct
+3. **Post-Generation Validation** — two checks run after all sections are generated:
+   - **Abstract word count check** — if the abstract exceeds 150 words (IPO limit), a warning suggestion is emitted immediately via `cross_reference_suggestion` event so the user sees it in the editor, not only at export time.
+   - **Cross-Reference Check** — lightweight LLM call that checks claim terms vs. specification, figure references, and antecedent basis. Returns a list of **suggestions** (not auto-applied). Each suggestion includes: section, issue description, proposed fix. Surfaced to the user as a review checklist in the editor UI.
 4. **Save to `patent_sections`** — each section → one row, project status → 'review'
 
 ### Streaming
@@ -299,6 +398,12 @@ data: {"section_type": "title", "content": "full accumulated text"}
 
 event: cross_reference_start
 data: {}
+
+event: cross_reference_suggestion
+data: {"section_type": "claims", "issue": "Claim 1 uses 'controller' but specification uses 'control unit'", "suggestion": "Replace 'controller' with 'control unit' in Claim 1 for consistency"}
+
+event: cross_reference_complete
+data: {"suggestion_count": 3}
 
 event: generation_complete
 data: {"project_id": "uuid", "sections_generated": 8}
@@ -331,7 +436,8 @@ User prompt
 - User can click "Regenerate" on any individual section card
 - Backend re-runs just that section's prompt with full context (interview + all other current sections)
 - Confirmation dialog before overwriting ("This will replace the current content. Continue?")
-- Previous version is not stored for MVP (edit_count increments but old content is overwritten)
+- **Previous version is saved** to `section_versions` before overwriting (version_number auto-increments)
+- Users can view version history and restore any previous version via the section card UI
 
 ### Error Recovery
 
@@ -356,11 +462,11 @@ trait LlmProvider {
 struct AnthropicProvider { /* Claude */ }
 struct OpenAiProvider { /* GPT - stubbed for MVP */ }
 
-// Config-driven selection
-let provider = match config.ai_provider {
-    "anthropic" => AnthropicProvider::new(config.anthropic_api_key),
-    "openai" => OpenAiProvider::new(config.openai_api_key),
-    _ => AnthropicProvider::new(config.anthropic_api_key), // default
+// Config-driven selection (API key only required for real providers)
+let provider = match config.ai_provider.as_str() {
+    "mock" => MockProvider::new(),  // no API key needed
+    "openai" => OpenAiProvider::new(config.openai_api_key.expect("OPENAI_API_KEY required")),
+    _ => AnthropicProvider::new(config.anthropic_api_key.expect("ANTHROPIC_API_KEY required")),
 };
 ```
 
@@ -376,6 +482,7 @@ Each patent section is rendered as a card with:
 - Content area (rendered text, collapsed for long sections with "Show more")
 - Edit button — toggles into textarea edit mode with save/cancel
 - Regenerate button — re-runs AI for this section only
+- History button — shows version history panel with list of previous versions (timestamp, source), click to preview, "Restore" button to revert
 - Status badge — "AI Generated" / "Edited" / "Regenerating..."
 
 ### Behavior
@@ -390,13 +497,13 @@ Each patent section is rendered as a card with:
 
 | Route                   | Purpose                                                                                                                                                                                                              |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/login`                | Email/password login (Supabase Auth)                                                                                                                                                                                 |
-| `/subscribe`            | Subscription gate — shown when user has no active subscription. Displays plan details and "Subscribe" button that creates a Stripe Checkout session and redirects. On success, Stripe redirects back to `/projects`. |
+| `/login`                | Email/password login (self-managed auth, Rust backend)                                                                                                                                                               |
+| `/subscribe`            | Subscription gate — shown when user has no active subscription. Displays plan details and "Subscribe" button that creates a Razorpay Subscription and opens the Razorpay checkout modal. On success, redirects to `/projects`. |
 | `/projects`             | List of user's patent projects (cards: title, status, date)                                                                                                                                                          |
-| `/projects/new`         | Interview wizard (Steps 1-6)                                                                                                                                                                                         |
+| `/projects/new`         | Interview wizard (Steps 1-7)                                                                                                                                                                                         |
 | `/projects/[id]`        | Section-based editor                                                                                                                                                                                                 |
 | `/projects/[id]/export` | Export page — format selection (PDF/DOCX buttons), shows generation progress while file is being created, lists previous exports with download links, displays error state with retry option on failure              |
-| `/account`              | Profile, subscription status, Stripe billing portal link (manage/cancel)                                                                                                                                             |
+| `/account`              | Profile, subscription status, manage/cancel subscription                                                                                                                                                             |
 
 ---
 
@@ -408,7 +515,7 @@ Typst is invoked as a **CLI subprocess** (`typst compile`) — not as a Rust lib
 
 - IPO Form 2 compliant layout
 - A4 page size with IPO-standard margins
-- Title page with application metadata
+- Title page with filing metadata from `project_applicants` (applicant name, address, nationality, inventor details, agent info, priority claims)
 - Numbered paragraphs throughout specification
 - Claims on separate page, numbered sequentially
 - Abstract limited to 150 words (validated, warn user if over)
@@ -426,11 +533,11 @@ Typst is invoked as a **CLI subprocess** (`typst compile`) — not as a Rust lib
 ### Flow
 
 1. User clicks "Export as PDF" or "Export as DOCX"
-2. Rust backend assembles all `patent_sections` in order
+2. Rust backend assembles all `patent_sections` in order + `project_applicants` metadata for title page
 3. Generates file using typst (PDF) or docx-rs (DOCX)
-4. Uploads to Supabase Storage
-5. Saves record in `exports` table
-6. Returns signed download URL to frontend
+4. Uploads via `StorageClient` (local filesystem in dev, Cloudflare R2 in production)
+5. Saves record in `exports` table with storage key
+6. Returns download URL from storage backend to frontend
 7. Browser triggers download
 
 ---
@@ -439,54 +546,90 @@ Typst is invoked as a **CLI subprocess** (`typst compile`) — not as a Rust lib
 
 ### Auth Flow
 
-- **Supabase Auth** handles email/password signup, login, JWT issuance
-- **No public registration for MVP** — users created manually in Supabase dashboard
-- Frontend stores JWT in httpOnly cookie (Supabase client handles this)
-- Every API request to Rust backend includes JWT in Authorization header
-- Rust middleware validates JWT signature against Supabase JWT secret
+- **Self-managed auth in Rust** — email/password login, argon2 password hashing, JWT issuance
+- **No public registration for MVP** — users created via CLI seed command or admin endpoint
+- Frontend stores JWT in httpOnly cookie (set by Rust backend via `Set-Cookie` header)
+- Every API request to Rust backend reads JWT from httpOnly cookie (sent automatically with `credentials: "include"`)
+- Rust middleware validates JWT signature against a server-side secret (HMAC-SHA256)
 - User ID extracted from token claims for all database queries
+- JWT expiry: 24 hours (stateless — no DB lookup on each request)
+- Refresh token expiry: 7 days, **stored server-side** in `sessions` table (hashed, revocable)
+- **Token type differentiation:** Access tokens use `iss: "pdp:access"`, refresh tokens use `iss: "pdp:refresh"`. The auth middleware rejects refresh tokens used as access tokens (and vice versa) by checking the `iss` claim.
 
-### User Record Creation
-
-The `users` table row is created via a **`POST /api/me` upsert endpoint** called on first login. The Next.js frontend calls this endpoint after Supabase Auth login succeeds, before routing to `/projects` or `/subscribe`. This ensures the `users` row exists before any Stripe webhook fires, preventing the foreign key race condition.
+### Auth Endpoints
 
 ```
-Login → Supabase Auth (JWT) → POST /api/me (upsert user row) → Route to /projects or /subscribe
+POST /api/auth/login    → email + password → validates → creates session row → sets JWT + refresh token (httpOnly cookies)
+POST /api/auth/refresh  → refresh token cookie → verifies iss="pdp:refresh" → looks up session (reject if revoked/expired) → issues new JWT (iss="pdp:access") + rotates refresh token (iss="pdp:refresh")
+POST /api/auth/logout   → revokes session row (sets revoked=true) → clears cookies
 ```
+
+### Session Security
+
+- Refresh tokens are **hashed** (SHA-256) before storage — raw tokens only exist in cookies
+- On refresh, the old refresh token is **rotated**: old session revoked, new session created
+- Logout **revokes the server-side session** — a stolen refresh token becomes invalid immediately
+- Expired sessions are cleaned up by a periodic `DELETE FROM sessions WHERE expires_at < now()` (cron or on-login cleanup)
 
 ### Access Gating
 
-- **No subscription → redirected to `/subscribe`** page with plan details and Stripe Checkout button
+- **No subscription → redirected to `/subscribe`** page with plan details and Razorpay checkout
 - **Active subscription → full access** to all features
 - Subscription check is middleware on protected routes (projects, generate, export)
-- For MVP development: first user can be manually set to 'active' in DB
+- **Performance note:** The subscription middleware hits the DB on every protected request. This is acceptable for MVP volume. Post-MVP optimization: cache subscription status in an in-memory TTL cache (e.g., `moka` crate, 60s TTL) keyed by user_id, invalidated on webhook events.
+- For local development: `make seed-user` creates a test user **with an active subscription** (inserts both a `users` row and a `subscriptions` row with `status='active'` and `current_period_end` set 1 year in the future). No Razorpay interaction needed for local dev.
 
 ---
 
-## 10. Billing (Stripe)
+## 10. Billing (Razorpay)
+
+### Why Razorpay
+
+- Target users are Indian patent agents — primarily pay via UPI or Indian debit/credit cards
+- Best-in-class UPI experience (auto-collect, QR, intent flow)
+- Native INR pricing — no currency conversion fees
+- Razorpay Subscriptions handles recurring billing
+- Lower transaction fees for domestic INR payments (~2%)
+- India-centric dashboard and support
 
 ### Integration Scope
 
-| Feature                  | MVP      | Notes                      |
-| ------------------------ | -------- | -------------------------- |
-| Stripe Checkout (hosted) | Yes      | Single subscription plan   |
-| Customer Portal (hosted) | Yes      | Manage/cancel subscription |
-| Webhooks                 | Yes      | 3 events (see below)       |
-| Multiple plans           | No       | Single plan, pricing TBD   |
-| Usage-based              | No       | Post-MVP                   |
-| Free trial               | Optional | Stripe-native trial period |
+| Feature                        | MVP      | Notes                               |
+| ------------------------------ | -------- | ----------------------------------- |
+| Razorpay Subscriptions         | Yes      | Single plan, INR pricing            |
+| Razorpay Checkout (embedded)   | Yes      | Opens modal on subscribe page       |
+| Manage/cancel subscription     | Yes      | In-app via Razorpay API calls       |
+| Webhooks                       | Yes      | 3 events (see below)                |
+| UPI + Cards + Netbanking       | Yes      | All domestic payment methods        |
+| Multiple plans                 | No       | Single plan, pricing TBD            |
+| Usage-based                    | No       | Post-MVP                            |
 
 ### Webhook Events
 
-1. `checkout.session.completed` — new subscription created, upsert to `subscriptions` table
-2. `customer.subscription.updated` — plan change, status change (active → past_due)
-3. `customer.subscription.deleted` — subscription canceled, update status
+Handled by Rust backend at `POST /api/webhooks/razorpay`:
+
+1. `subscription.activated` — new subscription active, upsert to `subscriptions` table
+2. `subscription.charged` — recurring payment succeeded, update `current_period_start/end`
+3. `subscription.cancelled` / `subscription.halted` — subscription ended, update status
 
 ### Webhook Handler
 
-Lives in Next.js API route (`/api/webhooks/stripe/route.ts`) — lightweight, verifies Stripe signature, updates Supabase database directly via Supabase client.
+Lives in Rust backend (`routes/webhooks.rs`) — verifies Razorpay webhook signature (HMAC-SHA256 using webhook secret), updates database via sqlx.
 
-**Important:** All writes to `subscriptions` use **upsert** (`INSERT ... ON CONFLICT (stripe_subscription_id) DO UPDATE`) to handle Stripe webhook retries idempotently. The `stripe_subscription_id UNIQUE` constraint serves as the conflict target.
+**Important:** All writes to `subscriptions` use **upsert** (`INSERT ... ON CONFLICT (razorpay_subscription_id) DO UPDATE`) to handle webhook retries idempotently. The `razorpay_subscription_id UNIQUE` constraint serves as the conflict target. For `subscription.charged` events, the period dates are only updated if the incoming `current_period_end` is **newer** than the existing value (`WHERE current_period_end < EXCLUDED.current_period_end`), preventing stale webhook retries from overwriting newer state.
+
+### Subscription Flow
+
+```
+1. User clicks "Subscribe" on /subscribe page
+2. Frontend calls POST /api/subscriptions/create (Rust backend)
+3. Backend creates Razorpay Subscription via API, returns subscription_id
+4. Frontend opens Razorpay Checkout modal with subscription_id
+5. User pays via UPI/Card/Netbanking
+6. Razorpay sends webhook → Rust backend upserts subscription
+7. Frontend polls GET /api/me until has_active_subscription = true
+8. Redirect to /projects
+```
 
 ---
 
@@ -495,7 +638,7 @@ Lives in Next.js API route (`/api/webhooks/stripe/route.ts`) — lightweight, ve
 ```
 patent-draft-pro/
 ├── apps/
-│   └── web/                          ← Next.js 15 (App Router)
+│   └── web/                          ← Next.js 16 (App Router)
 │       ├── app/                      ← Pages and routes
 │       ├── components/               ← UI components
 │       │   ├── ui/                   ← shadcn/ui primitives
@@ -504,8 +647,7 @@ patent-draft-pro/
 │       │   └── layout/               ← Navbar, auth guard
 │       ├── lib/                      ← Utilities
 │       │   ├── api-client.ts         ← Typed HTTP client for Rust backend
-│       │   ├── supabase.ts           ← Supabase client config
-│       │   └── stripe.ts             ← Stripe helpers
+│       │   └── razorpay.ts           ← Razorpay checkout helpers
 │       ├── next.config.ts
 │       ├── tailwind.config.ts
 │       └── package.json
@@ -515,8 +657,8 @@ patent-draft-pro/
 │   ├── api/                          ← Axum HTTP server
 │   │   └── src/
 │   │       ├── main.rs
-│   │       ├── routes/               ← Route handlers
-│   │       ├── middleware/            ← Auth, subscription checks
+│   │       ├── routes/               ← Route handlers (incl. auth + webhooks)
+│   │       ├── middleware/            ← Auth (JWT), subscription, rate limiting
 │   │       └── error.rs
 │   ├── ai/                           ← AI service crate
 │   │   └── src/
@@ -526,8 +668,14 @@ patent-draft-pro/
 │   ├── export/                       ← Export service crate
 │   │   └── src/
 │   │       ├── pdf.rs                ← typst PDF generation
-│   │       ├── docx.rs              ← docx-rs Word generation
+│   │       ├── docx.rs               ← docx-rs Word generation
 │   │       └── templates/            ← IPO Form 2 templates
+│   ├── storage/                      ← Storage client crate (local + R2)
+│   │   └── src/
+│   │       ├── lib.rs
+│   │       ├── client.rs             ← StorageClient trait + factory
+│   │       ├── local.rs              ← LocalStorage (filesystem, for dev)
+│   │       └── r2.rs                 ← R2Storage (S3-compatible, for prod)
 │   └── shared/                       ← Common crate
 │       └── src/
 │           ├── models.rs             ← DB models (sqlx FromRow)
@@ -547,22 +695,22 @@ patent-draft-pro/
 
 | Layer                 | Technology                  | Purpose                          |
 | --------------------- | --------------------------- | -------------------------------- |
-| Frontend              | Next.js 15 (App Router)     | Pages, routing, SSR              |
+| Frontend              | Next.js 16 (App Router)     | Pages, routing, SSR              |
 | UI                    | shadcn/ui + Tailwind CSS    | Design system                    |
 | Font                  | Geist Sans + Geist Mono     | Typography                       |
-| AI streaming (client) | AI SDK or custom SSE        | Stream AI text to UI             |
+| AI streaming (client) | Custom SSE hook             | Stream AI text to UI             |
 | Backend               | Rust + Axum                 | API server                       |
 | Database access       | sqlx (compile-time checked) | Type-safe Postgres queries       |
-| Database              | Supabase Postgres           | Managed Postgres                 |
-| Auth                  | Supabase Auth               | Email/password, JWT              |
-| File storage          | Supabase Storage            | Exported files, uploaded figures |
+| Database              | Postgres (Docker local, Supabase prod) | Managed Postgres (DB only) |
+| Auth                  | Self-managed (argon2 + JWT) | Email/password, JWT issuance     |
+| File storage          | Local FS (dev) / Cloudflare R2 (prod) | Exported files, uploaded figures |
 | AI provider (default) | Anthropic Claude            | Patent text generation           |
-| AI abstraction        | Custom Rust trait           | Provider-agnostic                |
+| AI abstraction        | Custom Rust trait            | Provider-agnostic                |
 | PDF export            | typst                       | IPO-formatted PDF                |
 | DOCX export           | docx-rs                     | Editable Word files              |
-| Billing               | Stripe                      | Subscriptions, checkout          |
-| Frontend hosting      | Vercel (free tier → Pro)    | CDN + serverless                 |
-| Backend hosting       | Fly.io                      | Rust containers                  |
+| Billing               | Razorpay                    | Subscriptions, UPI + cards       |
+| Frontend hosting      | Vercel                      | CDN + edge                       |
+| Backend hosting       | Fly.io (Mumbai)             | Rust containers                  |
 | CI/CD                 | GitHub Actions              | Build + deploy                   |
 
 ---
@@ -571,31 +719,64 @@ patent-draft-pro/
 
 ### Rust Backend API
 
-| Method   | Path                                          | Purpose                                                    | Auth | Subscription |
-| -------- | --------------------------------------------- | ---------------------------------------------------------- | ---- | ------------ |
-| `GET`    | `/api/health`                                 | Health check                                               | No   | No           |
-| `POST`   | `/api/me`                                     | Upsert user record from JWT claims (called on first login) | Yes  | No           |
-| `GET`    | `/api/me`                                     | Get current user profile + subscription status             | Yes  | No           |
-| `GET`    | `/api/projects`                               | List user's projects                                       | Yes  | Yes          |
-| `POST`   | `/api/projects`                               | Create new project                                         | Yes  | Yes          |
-| `GET`    | `/api/projects/:id`                           | Get project with sections                                  | Yes  | Yes          |
-| `PATCH`  | `/api/projects/:id`                           | Update project metadata (title, patent_type)               | Yes  | Yes          |
-| `DELETE` | `/api/projects/:id`                           | Delete project                                             | Yes  | Yes          |
-| `PUT`    | `/api/projects/:id/interview`                 | Save interview responses (batch)                           | Yes  | Yes          |
-| `GET`    | `/api/projects/:id/interview`                 | Get interview responses                                    | Yes  | Yes          |
-| `POST`   | `/api/projects/:id/figures`                   | Upload figure image (multipart)                            | Yes  | Yes          |
-| `DELETE` | `/api/projects/:id/figures/:figure_id`        | Delete a figure                                            | Yes  | Yes          |
-| `GET`    | `/api/projects/:id/figures`                   | List figures for project                                   | Yes  | Yes          |
-| `POST`   | `/api/projects/:id/generate`                  | Start AI generation (returns SSE stream)                   | Yes  | Yes          |
-| `PUT`    | `/api/projects/:id/sections/:type`            | Update section content (manual edit)                       | Yes  | Yes          |
-| `POST`   | `/api/projects/:id/sections/:type/regenerate` | Regenerate single section (SSE stream)                     | Yes  | Yes          |
-| `POST`   | `/api/projects/:id/export`                    | Generate export (PDF or DOCX)                              | Yes  | Yes          |
-| `GET`    | `/api/projects/:id/exports`                   | List exports for project                                   | Yes  | Yes          |
-| `GET`    | `/api/exports/:id/download`                   | Get signed download URL                                    | Yes  | Yes          |
+| Method   | Path                                              | Purpose                                                    | Auth | Subscription |
+| -------- | ------------------------------------------------- | ---------------------------------------------------------- | ---- | ------------ |
+| `GET`    | `/api/health`                                     | Health check                                               | No   | No           |
+| `POST`   | `/api/auth/login`                                 | Email/password login → JWT + refresh token (cookies)       | No   | No           |
+| `POST`   | `/api/auth/refresh`                               | Refresh JWT using refresh token cookie                     | No   | No           |
+| `POST`   | `/api/auth/logout`                                | Clear auth cookies                                         | No   | No           |
+| `GET`    | `/api/me`                                         | Get current user profile + subscription status             | Yes  | No           |
+| `POST`   | `/api/subscriptions/create`                       | Create Razorpay Subscription, return subscription_id       | Yes  | No           |
+| `POST`   | `/api/subscriptions/cancel`                       | Cancel active subscription via Razorpay API                | Yes  | No           |
+| `GET`    | `/api/subscriptions/status`                       | Get current subscription details                           | Yes  | No           |
+| `POST`   | `/api/webhooks/razorpay`                          | Razorpay webhook handler (signature verified)              | No*  | No           |
+| `GET`    | `/api/projects`                                   | List user's projects                                       | Yes  | Yes          |
+| `POST`   | `/api/projects`                                   | Create new project                                         | Yes  | Yes          |
+| `GET`    | `/api/projects/:id`                               | Get project with sections                                  | Yes  | Yes          |
+| `PATCH`  | `/api/projects/:id`                               | Update project metadata (title, patent_type)               | Yes  | Yes          |
+| `DELETE` | `/api/projects/:id`                               | Soft-delete project (sets deleted_at)                      | Yes  | Yes          |
+| `PUT`    | `/api/projects/:id/applicant`                     | Upsert applicant/inventor/agent details                    | Yes  | Yes          |
+| `GET`    | `/api/projects/:id/applicant`                     | Get applicant details for a project                        | Yes  | Yes          |
+| `PUT`    | `/api/projects/:id/interview`                     | Save interview responses (batch)                           | Yes  | Yes          |
+| `GET`    | `/api/projects/:id/interview`                     | Get interview responses                                    | Yes  | Yes          |
+| `POST`   | `/api/projects/:id/figures`                       | Upload figure image (multipart)                            | Yes  | Yes          |
+| `DELETE` | `/api/projects/:id/figures/:figure_id`            | Delete a figure                                            | Yes  | Yes          |
+| `GET`    | `/api/projects/:id/figures`                       | List figures for project                                   | Yes  | Yes          |
+| `POST`   | `/api/projects/:id/generate`                      | Start AI generation (returns SSE stream) — rate limited    | Yes  | Yes          |
+| `PUT`    | `/api/projects/:id/sections/:type`                | Update section content (manual edit)                       | Yes  | Yes          |
+| `POST`   | `/api/projects/:id/sections/:type/regenerate`     | Regenerate single section (SSE stream) — rate limited      | Yes  | Yes          |
+| `GET`    | `/api/projects/:id/sections/:type/versions`       | List version history for a section                         | Yes  | Yes          |
+| `POST`   | `/api/projects/:id/sections/:type/versions/:ver/restore` | Restore a previous version                          | Yes  | Yes          |
+| `POST`   | `/api/projects/:id/export`                        | Generate export (PDF or DOCX) — rate limited               | Yes  | Yes          |
+| `GET`    | `/api/projects/:id/exports`                       | List exports for project                                   | Yes  | Yes          |
+| `GET`    | `/api/exports/:id/download`                       | Get download URL from storage backend                      | Yes  | Yes          |
 
-- **Auth** = valid JWT in Authorization header required
+- **Auth** = valid JWT in Authorization header (or httpOnly cookie) required
 - **Subscription** = active subscription required (middleware check)
-- `/api/me` endpoints do NOT require subscription — needed for the subscribe flow before payment
+- **No*** = Razorpay webhook uses signature verification instead of JWT auth
+- `/api/me` and `/api/subscriptions/*` do NOT require subscription — needed for the subscribe flow before payment
+- **Rate limited** endpoints: generate (5/hour), regenerate (20/hour), export (10/hour) per user
+
+### Rate Limiting
+
+Two layers of rate limiting:
+
+**1. Application-level (Rust middleware)** — per-user limits on expensive operations:
+
+| Action       | Limit       | Window | Enforcement          |
+| ------------ | ----------- | ------ | -------------------- |
+| `generate`   | 5 requests  | 1 hour | 429 Too Many Requests |
+| `regenerate` | 20 requests | 1 hour | 429 Too Many Requests |
+| `export`     | 10 requests | 1 hour | 429 Too Many Requests |
+
+Tracked in `rate_limits` table. Middleware checks before executing the operation.
+
+**2. Edge-level (Vercel Firewall)** — protects frontend from abuse:
+
+| Rule                    | Limit          | Window | Action    |
+| ----------------------- | -------------- | ------ | --------- |
+| API routes              | 100 req/min    | 60s    | deny (429)|
+| Login page              | 10 req/min     | 60s    | challenge |
 
 ---
 
@@ -604,25 +785,39 @@ patent-draft-pro/
 ### Frontend (.env.local)
 
 ```
-NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJ...
-NEXT_PUBLIC_API_URL=http://localhost:3001  # Rust backend URL
-STRIPE_SECRET_KEY=sk_test_...
-STRIPE_WEBHOOK_SECRET=whsec_...
-STRIPE_PRICE_ID=price_...
+NEXT_PUBLIC_API_URL=http://localhost:5012  # Rust backend URL
+NEXT_PUBLIC_RAZORPAY_KEY_ID=rzp_test_...  # Razorpay publishable key
 ```
 
 ### Backend (.env)
 
 ```
-DATABASE_URL=postgresql://...
-SUPABASE_JWT_SECRET=your-jwt-secret
+DATABASE_URL=postgresql://postgres:postgres@localhost:5432/patent_draft_pro
+JWT_SECRET=your-random-64-char-secret
 ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...  # optional, for future use
-SUPABASE_URL=https://xxx.supabase.co
-SUPABASE_SERVICE_KEY=eyJ...  # service role key for storage
+OPENAI_API_KEY=sk-...                    # optional, for future use
+AI_PROVIDER=mock                          # "anthropic" | "mock" (use mock for local dev)
+
+# Storage backend: "local" for development, "r2" for production
+STORAGE_BACKEND=local                     # "local" | "r2"
+STORAGE_LOCAL_PATH=./storage              # local dev: files saved here (auto-created)
+
+# Cloudflare R2 (only needed when STORAGE_BACKEND=r2)
+R2_ACCOUNT_ID=your-cf-account-id
+R2_ACCESS_KEY_ID=your-r2-access-key
+R2_SECRET_ACCESS_KEY=your-r2-secret-key
+R2_BUCKET_NAME=patent-draft-pro
+R2_PUBLIC_URL=https://files.patentdraftpro.com
+
+# Razorpay
+RAZORPAY_KEY_ID=rzp_test_...
+RAZORPAY_KEY_SECRET=your-razorpay-secret
+RAZORPAY_WEBHOOK_SECRET=your-webhook-secret
+RAZORPAY_PLAN_ID=plan_...                # subscription plan ID
+
 RUST_LOG=info
-PORT=3001
+PORT=5012
+ALLOWED_ORIGIN=http://localhost:3000   # Lock CORS to frontend origin (use production URL in prod)
 ```
 
 ---
@@ -679,8 +874,8 @@ Located in `backend/tests/` directory. Use `testcontainers` crate to spin up a r
 
 **Auth flow:**
 
-- `test_upsert_user_from_jwt` — POST /api/me with valid Supabase JWT creates user row
-- `test_upsert_user_idempotent` — POST /api/me called twice doesn't duplicate
+- `test_login_creates_session` — POST /api/auth/login with valid credentials creates user session and returns JWT
+- `test_get_me_with_valid_jwt` — GET /api/me with self-issued JWT returns user profile
 - `test_reject_invalid_jwt` — request with expired/invalid JWT returns 401
 - `test_reject_missing_jwt` — request without Authorization header returns 401
 
@@ -697,7 +892,7 @@ Located in `backend/tests/` directory. Use `testcontainers` crate to spin up a r
 - `test_list_projects` — GET /api/projects returns only current user's projects (multi-tenant isolation)
 - `test_get_project_with_sections` — GET /api/projects/:id includes patent_sections
 - `test_patch_project` — PATCH /api/projects/:id updates title and patent_type
-- `test_delete_project_cascades` — DELETE removes project + interview_responses + sections + figures + exports
+- `test_delete_project_soft_deletes` — DELETE sets `deleted_at`, project no longer appears in list, but data is preserved in DB
 - `test_cannot_access_other_users_project` — GET /api/projects/:other_user_id returns 404
 
 **Interview responses:**
@@ -730,28 +925,29 @@ Located in `backend/tests/` directory. Use `testcontainers` crate to spin up a r
 
 **Export:**
 
-- `test_export_pdf` — POST /api/projects/:id/export with format=pdf generates file, stores in Supabase Storage, creates exports row
+- `test_export_pdf` — POST /api/projects/:id/export with format=pdf generates file, stores via `StorageClient` (LocalStorage in tests), creates exports row
 - `test_export_docx` — same for DOCX
-- `test_export_download_url` — GET /api/exports/:id/download returns signed URL
+- `test_export_download_url` — GET /api/exports/:id/download returns download URL (presigned URL for R2, local file URL for LocalStorage)
 - `test_export_requires_all_sections` — export with missing sections returns 400 with list of missing sections
 
 ### Frontend Unit Tests (Vitest + React Testing Library)
 
 **Components:**
 
-- `InterviewStep1.test.tsx` — renders form fields, validates required fields, calls onNext with data
-- `InterviewStep2.test.tsx` — renders textareas, validates required fields
-- `InterviewStep3.test.tsx` — renders textareas, validates required fields
-- `InterviewStep4.test.tsx` — renders textareas, optional field can be empty
-- `InterviewStep5.test.tsx` — renders file upload, handles multiple images, figure descriptions
-- `InterviewReview.test.tsx` — renders all responses, edit buttons navigate to correct step, generate button disabled when fields missing
+- `StepBasics.test.tsx` — renders title, patent type, technical field inputs; validates required fields
+- `StepApplicant.test.tsx` — renders applicant/inventor/agent fields; saves to project_applicants; optional fields can be empty
+- `StepProblem.test.tsx` — renders problem/prior art textareas; validates required fields
+- `StepDescription.test.tsx` — renders invention description textareas; validates required fields
+- `StepNovelty.test.tsx` — renders novelty/advantages textareas; optional embodiments field can be empty
+- `StepFigures.test.tsx` — renders file upload, handles multiple images, figure descriptions
+- `StepReview.test.tsx` — renders all responses + applicant summary, edit buttons navigate to correct step, generate button disabled when fields missing
 - `SectionCard.test.tsx` — renders section content, toggles edit mode, shows status badge
 - `SectionCard.test.tsx` — edit mode: textarea, save/cancel buttons, auto-save triggers
 - `SectionCard.test.tsx` — regenerate button shows confirmation dialog
 - `SectionCard.test.tsx` — collapsed state shows first 5 lines + "Show more"
 - `ProjectCard.test.tsx` — renders title, status, date, click navigates
 - `ExportPage.test.tsx` — renders format buttons, shows progress, lists previous exports
-- `SubscribePage.test.tsx` — renders plan details, subscribe button triggers Stripe checkout redirect
+- `SubscribePage.test.tsx` — renders plan details, subscribe button opens Razorpay checkout modal
 - `AccountPage.test.tsx` — renders profile, subscription status, manage billing link
 
 **Hooks:**
@@ -769,14 +965,14 @@ Located in `backend/tests/` directory. Use `testcontainers` crate to spin up a r
 
 Page-level tests with mocked API responses via Mock Service Worker.
 
-- `LoginPage.test.tsx` — login form submits to Supabase, redirects to /projects on success, shows error on failure
+- `LoginPage.test.tsx` — login form submits to Rust backend (`POST /api/auth/login`), redirects to /projects on success, shows error on failure
 - `ProjectsPage.test.tsx` — fetches and renders project list, empty state shows "Create your first patent draft" CTA
-- `NewProjectPage.test.tsx` — full wizard flow: Step 1 → 2 → 3 → 4 → 5 → 6, saves responses at each step, generate button triggers API call
+- `NewProjectPage.test.tsx` — full wizard flow: Step 1 → 2 → 3 → 4 → 5 → 6 → 7, saves responses at each step, generate button triggers API call
 - `EditorPage.test.tsx` — loads project with sections, renders all section cards, edit saves to API, regenerate streams SSE
 - `EditorPage.test.tsx` — generation in progress: shows streaming sections with progress indicator
 - `ExportPage.test.tsx` — triggers export, shows progress, handles download URL response
-- `SubscribePage.test.tsx` — subscribe flow creates Stripe Checkout session, redirects to Stripe
-- `AccountPage.test.tsx` — loads user profile + subscription, manage billing links to Stripe Portal
+- `SubscribePage.test.tsx` — subscribe flow calls createSubscription API, opens Razorpay modal
+- `AccountPage.test.tsx` — loads user profile + subscription, manage/cancel subscription via API
 
 ### E2E Tests (Playwright)
 
@@ -798,15 +994,15 @@ Full browser tests against running frontend + backend (backend uses test databas
 
 **Interview wizard:**
 
-- `interview.spec.ts` — complete full wizard (Steps 1-6) with valid data → all fields saved
+- `interview.spec.ts` — complete full wizard (Steps 1-7) with valid data → all fields saved
 - `interview.spec.ts` — navigate back and forth between steps → data persists
 - `interview.spec.ts` — refresh browser mid-wizard → resumes at correct step with data intact
-- `interview.spec.ts` — skip optional fields (Step 4 alternative embodiments, Step 5 figures) → proceeds normally
+- `interview.spec.ts` — skip optional fields (Step 5 alternative embodiments, Step 6 figures) → proceeds normally
 - `interview.spec.ts` — try to proceed with empty required fields → validation error shown
 
 **AI generation:**
 
-- `generation.spec.ts` — click "Generate" on Step 6 → sections appear one by one with streaming animation
+- `generation.spec.ts` — click "Generate" on Step 7 → sections appear one by one with streaming animation
 - `generation.spec.ts` — all 8 sections render in correct IPO order
 - `generation.spec.ts` — project status updates to "In Review" after generation completes
 - `generation.spec.ts` — navigate to /projects → project shows "In Review" status
@@ -830,7 +1026,7 @@ Full browser tests against running frontend + backend (backend uses test databas
 **Subscription:**
 
 - `subscription.spec.ts` — user without subscription sees /subscribe page with plan details
-- `subscription.spec.ts` — click "Subscribe" → redirected to Stripe Checkout (verify redirect URL)
+- `subscription.spec.ts` — click "Subscribe" → Razorpay Checkout modal opens (verify modal loads)
 - `subscription.spec.ts` — after successful subscription → can access /projects
 
 **Projects:**
@@ -932,5 +1128,5 @@ jobs:
 - Marketing/landing page
 - Usage-based billing options
 - Direct IPO e-filing integration
-- Document versioning and diff view
-- Razorpay integration for Indian payment preferences
+- Section diff view (compare versions side-by-side)
+- Stripe integration for international customers

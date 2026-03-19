@@ -1,7 +1,9 @@
 pub mod applicants;
 pub mod auth;
 pub mod figures;
+pub mod generate;
 pub mod health;
 pub mod interview;
 pub mod me;
 pub mod projects;
+pub mod sections;

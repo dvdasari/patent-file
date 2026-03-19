@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 shared = { path = "../shared" }
 storage = { path = "../storage" }
+ai = { path = "../ai" }
 axum = { version = "0.8", features = ["multipart"] }
 http = "1"
 tokio.workspace = true
@@ -25,3 +26,5 @@ rand = "0.8"
 base64 = "0.22"
 clap = { version = "4", features = ["derive"] }
 axum-extra = { version = "0.10", features = ["cookie"] }
+async-stream = "0.3"
+futures = "0.3"

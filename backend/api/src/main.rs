@@ -12,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 use routes::auth::AuthState;
 use routes::figures::FiguresState;
+use routes::generate::GenerateState;
 
 #[derive(Parser)]
 #[command(name = "patent-draft-pro-api")]
@@ -55,6 +56,14 @@ async fn main() -> anyhow::Result<()> {
     {
         return seed_user(&pool, &email, &password, &name, with_subscription).await;
     }
+
+    // Initialize AI provider
+    let ai_provider: std::sync::Arc<dyn ai::LlmProvider> = std::sync::Arc::from(
+        ai::create_provider(
+            &config.ai_provider,
+            config.anthropic_api_key.as_deref(),
+        )?
+    );
 
     // Initialize storage client
     let storage = storage::create_storage_client(
@@ -132,6 +141,41 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(figures_state);
 
+    // Generate + sections routes (need AI provider)
+    let generate_state = GenerateState {
+        pool: pool.clone(),
+        provider: ai_provider,
+    };
+    let generate_routes = Router::new()
+        .route("/api/projects/{id}/generate", post(routes::generate::generate))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::rate_limit::rate_limit_generate,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::subscription::subscription_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .with_state(generate_state);
+
+    let sections_routes = Router::new()
+        .route("/api/projects/{id}/sections/{section_type}", put(routes::sections::update_section))
+        .route("/api/projects/{id}/sections/{section_type}/versions", get(routes::sections::list_versions))
+        .route("/api/projects/{id}/sections/{section_type}/versions/{version_number}/restore", post(routes::sections::restore_version))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::subscription::subscription_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .with_state(pool.clone());
+
     // Static file serving for local storage (dev only)
     let static_routes = if config.storage_backend == "local" {
         let path = config.storage_local_path.as_deref().unwrap_or("./storage");
@@ -161,7 +205,9 @@ async fn main() -> anyhow::Result<()> {
         .merge(public_routes)
         .merge(auth_only_routes)
         .merge(protected_routes)
-        .merge(figures_routes);
+        .merge(figures_routes)
+        .merge(generate_routes)
+        .merge(sections_routes);
 
     if let Some(static_rt) = static_routes {
         app = app.merge(static_rt);

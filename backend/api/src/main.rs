@@ -11,6 +11,7 @@ use tower_http::services::ServeDir;
 use tracing_subscriber::EnvFilter;
 
 use routes::auth::AuthState;
+use routes::export::ExportState;
 use routes::figures::FiguresState;
 use routes::generate::GenerateState;
 
@@ -95,6 +96,8 @@ async fn main() -> anyhow::Result<()> {
     // Routes that need auth but NOT subscription (for pre-payment flow)
     let auth_only_routes = Router::new()
         .route("/api/me", get(routes::me::get_me))
+        .route("/api/subscriptions/create", post(routes::subscriptions::create_subscription))
+        .route("/api/subscriptions/status", get(routes::subscriptions::subscription_status))
         .layer(axum_mw::from_fn_with_state(
             jwt_secret.clone(),
             middleware::auth::auth_middleware,
@@ -176,6 +179,30 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(pool.clone());
 
+    // Export routes
+    let export_state = ExportState {
+        pool: pool.clone(),
+        storage: storage.clone(),
+    };
+    let export_routes = Router::new()
+        .route("/api/projects/{id}/export", post(routes::export::create_export))
+        .route("/api/projects/{id}/exports", get(routes::export::list_exports))
+        .route("/api/exports/{id}/download", get(routes::export::get_download_url))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::subscription::subscription_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .with_state(export_state);
+
+    // Webhook routes (no auth — signature verified internally)
+    let webhook_routes = Router::new()
+        .route("/api/webhooks/razorpay", post(routes::webhooks::razorpay_webhook))
+        .with_state(pool.clone());
+
     // Static file serving for local storage (dev only)
     let static_routes = if config.storage_backend == "local" {
         let path = config.storage_local_path.as_deref().unwrap_or("./storage");
@@ -207,7 +234,9 @@ async fn main() -> anyhow::Result<()> {
         .merge(protected_routes)
         .merge(figures_routes)
         .merge(generate_routes)
-        .merge(sections_routes);
+        .merge(sections_routes)
+        .merge(export_routes)
+        .merge(webhook_routes);
 
     if let Some(static_rt) = static_routes {
         app = app.merge(static_rt);

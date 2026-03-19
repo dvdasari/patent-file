@@ -7,9 +7,11 @@ use clap::{Parser, Subcommand};
 use shared::config::AppConfig;
 use shared::db::create_pool;
 use tower_http::cors::CorsLayer;
+use tower_http::services::ServeDir;
 use tracing_subscriber::EnvFilter;
 
 use routes::auth::AuthState;
+use routes::figures::FiguresState;
 
 #[derive(Parser)]
 #[command(name = "patent-draft-pro-api")]
@@ -53,6 +55,18 @@ async fn main() -> anyhow::Result<()> {
     {
         return seed_user(&pool, &email, &password, &name, with_subscription).await;
     }
+
+    // Initialize storage client
+    let storage = storage::create_storage_client(
+        &config.storage_backend,
+        config.storage_local_path.as_deref(),
+        config.port,
+        config.r2_account_id.as_deref(),
+        config.r2_access_key_id.as_deref(),
+        config.r2_secret_access_key.as_deref(),
+        config.r2_bucket_name.as_deref(),
+        config.r2_public_url.as_deref(),
+    )?;
 
     let jwt_secret = config.jwt_secret.clone();
 
@@ -99,6 +113,33 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(pool.clone());
 
+    // Figures routes (need storage client)
+    let figures_state = FiguresState {
+        pool: pool.clone(),
+        storage: storage.clone(),
+    };
+    let figures_routes = Router::new()
+        .route("/api/projects/{id}/figures", post(routes::figures::upload_figure))
+        .route("/api/projects/{id}/figures", get(routes::figures::list_figures))
+        .route("/api/projects/{id}/figures/{figure_id}", delete(routes::figures::delete_figure))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::subscription::subscription_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .with_state(figures_state);
+
+    // Static file serving for local storage (dev only)
+    let static_routes = if config.storage_backend == "local" {
+        let path = config.storage_local_path.as_deref().unwrap_or("./storage");
+        Some(Router::new().nest_service("/files", ServeDir::new(path)))
+    } else {
+        None
+    };
+
     let cors = CorsLayer::new()
         .allow_origin(
             config
@@ -116,11 +157,17 @@ async fn main() -> anyhow::Result<()> {
         .allow_headers([http::header::CONTENT_TYPE, http::header::AUTHORIZATION])
         .allow_credentials(true);
 
-    let app = Router::new()
+    let mut app = Router::new()
         .merge(public_routes)
         .merge(auth_only_routes)
         .merge(protected_routes)
-        .layer(cors);
+        .merge(figures_routes);
+
+    if let Some(static_rt) = static_routes {
+        app = app.merge(static_rt);
+    }
+
+    let app = app.layer(cors);
 
     let addr = format!("0.0.0.0:{}", config.port);
     tracing::info!("Starting server on {}", addr);

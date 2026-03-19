@@ -1,7 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api-client";
 import { AuthGuard } from "@/components/layout/auth-guard";
@@ -27,8 +27,10 @@ interface Project {
 function EditorContent() {
   const params = useParams();
   const searchParams = useSearchParams();
+  const router = useRouter();
   const projectId = params.id as string;
   const shouldGenerate = searchParams.get("generate") === "true";
+  const generationTriggered = useRef(false);
 
   const [project, setProject] = useState<Project | null>(null);
   const [sections, setSections] = useState<Section[]>([]);
@@ -43,14 +45,22 @@ function EditorContent() {
       };
       setProject(data.project);
       setSections(data.sections);
-      // Start generation if redirected from wizard with ?generate=true, or if status is already generating
-      setGenerating(data.project.status === "generating" || shouldGenerate);
+
+      // Start generation only once if redirected from wizard with ?generate=true
+      if (shouldGenerate && !generationTriggered.current && data.project.status !== "review") {
+        generationTriggered.current = true;
+        setGenerating(true);
+        // Remove ?generate=true from URL to prevent re-triggering on refresh
+        router.replace(`/projects/${projectId}`);
+      } else if (data.project.status === "generating") {
+        setGenerating(true);
+      }
     } catch {
       // handle error
     } finally {
       setLoading(false);
     }
-  }, [projectId, shouldGenerate]);
+  }, [projectId, shouldGenerate, router]);
 
   useEffect(() => {
     loadProject();

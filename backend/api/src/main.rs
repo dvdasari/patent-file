@@ -277,7 +277,9 @@ async fn seed_user(
         .to_string();
 
     let user_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO users (email, password_hash, full_name) VALUES ($1, $2, $3) RETURNING id",
+        "INSERT INTO users (email, password_hash, full_name) VALUES ($1, $2, $3)
+         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, full_name = EXCLUDED.full_name
+         RETURNING id",
     )
     .bind(email)
     .bind(&hash)
@@ -285,23 +287,26 @@ async fn seed_user(
     .fetch_one(pool)
     .await?;
 
-    println!("Created user: {} ({})", email, user_id);
+    println!("Upserted user: {} ({})", email, user_id);
 
     if with_subscription {
         let period_end = chrono::Utc::now() + chrono::Duration::days(365);
+        let sub_id = format!("sub_test_seed_{}", user_id);
         sqlx::query(
             "INSERT INTO subscriptions (user_id, razorpay_customer_id, razorpay_subscription_id, plan_id, status, current_period_start, current_period_end)
-             VALUES ($1, $2, $3, $4, 'active', now(), $5)"
+             VALUES ($1, $2, $3, $4, 'active', now(), $5)
+             ON CONFLICT (razorpay_subscription_id) DO UPDATE SET
+                status = 'active', current_period_end = EXCLUDED.current_period_end"
         )
         .bind(user_id)
         .bind("cust_test_seed")
-        .bind(format!("sub_test_seed_{}", user_id))
+        .bind(&sub_id)
         .bind("plan_test_seed")
         .bind(period_end)
         .execute(pool)
         .await?;
 
-        println!("Created active subscription (expires: {})", period_end.format("%Y-%m-%d"));
+        println!("Upserted active subscription (expires: {})", period_end.format("%Y-%m-%d"));
     }
 
     Ok(())

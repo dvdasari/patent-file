@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { api } from "@/lib/api-client";
 import { AuthGuard } from "@/components/layout/auth-guard";
@@ -26,7 +26,9 @@ interface Project {
 
 function EditorContent() {
   const params = useParams();
+  const searchParams = useSearchParams();
   const projectId = params.id as string;
+  const shouldGenerate = searchParams.get("generate") === "true";
 
   const [project, setProject] = useState<Project | null>(null);
   const [sections, setSections] = useState<Section[]>([]);
@@ -41,13 +43,14 @@ function EditorContent() {
       };
       setProject(data.project);
       setSections(data.sections);
-      setGenerating(data.project.status === "generating");
+      // Start generation if redirected from wizard with ?generate=true, or if status is already generating
+      setGenerating(data.project.status === "generating" || shouldGenerate);
     } catch {
       // handle error
     } finally {
       setLoading(false);
     }
-  }, [projectId]);
+  }, [projectId, shouldGenerate]);
 
   useEffect(() => {
     loadProject();

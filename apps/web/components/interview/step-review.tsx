@@ -47,7 +47,8 @@ export function StepReview({ data, goToStep, projectId }: Props) {
 
   async function handleGenerate() {
     setGenerating(true);
-    router.push(`/projects/${projectId}`);
+    // Navigate to editor with generate flag — editor will start SSE generation
+    router.push(`/projects/${projectId}?generate=true`);
   }
 
   return (

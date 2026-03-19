@@ -39,6 +39,14 @@ enum Commands {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Load .env from repo root (try ../.env since we run from backend/)
+    for path in &[".env", "../.env"] {
+        if std::path::Path::new(path).exists() {
+            dotenvy::from_path(path).ok();
+            break;
+        }
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         .init();

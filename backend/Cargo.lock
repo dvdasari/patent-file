@@ -110,6 +110,7 @@ dependencies = [
  "base64",
  "chrono",
  "clap",
+ "dotenvy",
  "futures",
  "http 1.4.0",
  "jsonwebtoken",

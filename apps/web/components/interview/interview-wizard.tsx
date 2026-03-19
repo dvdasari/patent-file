@@ -13,34 +13,64 @@ interface InterviewWizardProps {
   projectId: string;
 }
 
+const STEP_NAMES = [
+  "Basics",
+  "Applicant",
+  "Problem & Prior Art",
+  "Description",
+  "Novelty",
+  "Figures",
+  "Review",
+];
+
 export function InterviewWizard({ projectId }: InterviewWizardProps) {
   const wizard = useInterviewWizard(projectId);
   const { step, data, saving, updateField, goNext, goBack, goToStep } = wizard;
 
-  const stepProps = {
-    data,
-    updateField,
-    projectId,
-  };
+  const stepProps = { data, updateField, projectId };
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-8">
-      {/* Progress */}
-      <div className="mb-8">
-        <div className="flex items-center justify-between text-xs text-zinc-500 mb-2">
-          <span>Step {step} of {TOTAL_STEPS}</span>
-          <span>{STEP_NAMES[step - 1]}</span>
+    <div className="mx-auto max-w-2xl px-6 py-10 animate-fade-in">
+      {/* Step indicator */}
+      <div className="mb-10">
+        <div className="flex items-center justify-between mb-3">
+          {STEP_NAMES.map((name, i) => {
+            const stepNum = i + 1;
+            const isActive = step === stepNum;
+            const isComplete = step > stepNum;
+            return (
+              <button
+                key={name}
+                onClick={() => goToStep(stepNum)}
+                className="flex items-center gap-1.5 transition-all duration-200"
+              >
+                <div
+                  className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-mono transition-all duration-300"
+                  style={{
+                    background: isActive ? "var(--accent)" : isComplete ? "rgba(200, 169, 110, 0.15)" : "var(--surface-raised)",
+                    color: isActive ? "var(--background)" : isComplete ? "var(--accent)" : "var(--muted)",
+                    border: isActive ? "none" : `1px solid ${isComplete ? "var(--accent-dim)" : "var(--border)"}`,
+                  }}
+                >
+                  {isComplete ? "✓" : stepNum}
+                </div>
+                <span className="hidden sm:inline text-xs" style={{ color: isActive ? "var(--foreground)" : "var(--muted)" }}>
+                  {name}
+                </span>
+              </button>
+            );
+          })}
         </div>
-        <div className="h-1 rounded-full bg-zinc-800">
+        <div className="h-px w-full" style={{ background: "var(--border)" }}>
           <div
-            className="h-1 rounded-full bg-zinc-400 transition-all"
-            style={{ width: `${(step / TOTAL_STEPS) * 100}%` }}
+            className="h-px transition-all duration-500 ease-out"
+            style={{ width: `${((step - 1) / (TOTAL_STEPS - 1)) * 100}%`, background: "var(--accent)" }}
           />
         </div>
       </div>
 
       {/* Step Content */}
-      <div className="mb-8">
+      <div className="mb-10 min-h-[400px]">
         {step === 1 && <StepBasics {...stepProps} />}
         {step === 2 && <StepApplicant {...stepProps} />}
         {step === 3 && <StepProblem {...stepProps} />}
@@ -51,34 +81,32 @@ export function InterviewWizard({ projectId }: InterviewWizardProps) {
       </div>
 
       {/* Navigation */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between border-t pt-6" style={{ borderColor: "var(--border)" }}>
         <button
           onClick={goBack}
           disabled={step === 1}
-          className="rounded-md border border-zinc-700 px-4 py-2 text-sm text-zinc-300 hover:bg-zinc-800 disabled:opacity-30"
+          className="rounded border px-4 py-2 text-xs font-medium transition-all disabled:opacity-20"
+          style={{ borderColor: "var(--border)", color: "var(--muted)" }}
         >
-          Back
+          ← Back
         </button>
-        {step < TOTAL_STEPS ? (
+
+        <span className="text-xs font-mono" style={{ color: "var(--muted)" }}>
+          {step} / {TOTAL_STEPS}
+        </span>
+
+        {step < TOTAL_STEPS && (
           <button
             onClick={goNext}
             disabled={saving}
-            className="rounded-md bg-zinc-100 px-4 py-2 text-sm font-medium text-zinc-900 hover:bg-zinc-200 disabled:opacity-50"
+            className="rounded px-5 py-2 text-xs font-medium transition-all disabled:opacity-40"
+            style={{ background: "var(--accent)", color: "var(--background)" }}
           >
-            {saving ? "Saving..." : "Next"}
+            {saving ? "Saving..." : "Next →"}
           </button>
-        ) : null}
+        )}
+        {step === TOTAL_STEPS && <div />}
       </div>
     </div>
   );
 }
-
-const STEP_NAMES = [
-  "Basics",
-  "Applicant Details",
-  "Problem & Prior Art",
-  "Invention Description",
-  "Novelty & Advantages",
-  "Figures",
-  "Review & Generate",
-];

@@ -17,7 +17,6 @@ interface ExportRecord {
 function ExportContent() {
   const params = useParams();
   const projectId = params.id as string;
-
   const [exports, setExports] = useState<ExportRecord[]>([]);
   const [generating, setGenerating] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -51,63 +50,75 @@ function ExportContent() {
   }
 
   return (
-    <div className="mx-auto max-w-2xl px-4 py-8">
-      <h1 className="text-lg font-semibold text-zinc-100 mb-6">Export Patent Draft</h1>
+    <div className="mx-auto max-w-2xl px-6 py-10 animate-fade-in">
+      <div className="mb-8">
+        <h1 className="text-lg font-medium tracking-tight text-zinc-100">Export</h1>
+        <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>
+          Generate IPO Form 2 compliant documents
+        </p>
+      </div>
 
-      <div className="flex gap-4 mb-8">
-        <button
-          onClick={() => handleExport("pdf")}
-          disabled={generating !== null}
-          className="flex-1 rounded-lg border border-zinc-700 bg-zinc-900 p-6 text-center hover:border-zinc-500 disabled:opacity-50"
-        >
-          <div className="text-2xl mb-2">PDF</div>
-          <p className="text-sm text-zinc-400">IPO Form 2 format</p>
-          {generating === "pdf" && (
-            <p className="mt-2 text-xs text-zinc-500 animate-pulse">Generating...</p>
-          )}
-        </button>
-        <button
-          onClick={() => handleExport("docx")}
-          disabled={generating !== null}
-          className="flex-1 rounded-lg border border-zinc-700 bg-zinc-900 p-6 text-center hover:border-zinc-500 disabled:opacity-50"
-        >
-          <div className="text-2xl mb-2">DOCX</div>
-          <p className="text-sm text-zinc-400">Editable Word format</p>
-          {generating === "docx" && (
-            <p className="mt-2 text-xs text-zinc-500 animate-pulse">Generating...</p>
-          )}
-        </button>
+      <div className="grid grid-cols-2 gap-3 mb-8">
+        {[
+          { format: "pdf", label: "PDF", desc: "IPO Form 2 layout" },
+          { format: "docx", label: "DOCX", desc: "Editable Word format" },
+        ].map(({ format, label, desc }) => (
+          <button
+            key={format}
+            onClick={() => handleExport(format)}
+            disabled={generating !== null}
+            className="group rounded border p-6 text-left transition-all duration-200 disabled:opacity-40 hover:-translate-y-0.5"
+            style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "var(--accent-dim)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "var(--border)"; }}
+          >
+            <div className="text-lg font-mono font-medium text-zinc-200 mb-1">.{format}</div>
+            <p className="text-xs" style={{ color: "var(--muted)" }}>{desc}</p>
+            {generating === format && (
+              <div className="mt-3 flex items-center gap-2">
+                <div className="w-2.5 h-2.5 border border-zinc-500 border-t-transparent rounded-full animate-spin" />
+                <span className="text-xs" style={{ color: "var(--accent)" }}>Generating...</span>
+              </div>
+            )}
+          </button>
+        ))}
       </div>
 
       {error && (
-        <div className="mb-4 rounded-md bg-red-950/50 border border-red-900 px-3 py-2 text-sm text-red-400">
+        <div className="mb-6 rounded border px-4 py-3 text-sm"
+          style={{ borderColor: "rgba(239, 68, 68, 0.3)", background: "rgba(239, 68, 68, 0.05)", color: "#f87171" }}>
           {error}
         </div>
       )}
 
       {exports.length > 0 && (
         <div>
-          <h2 className="text-sm font-medium text-zinc-300 mb-3">Previous Exports</h2>
-          <div className="space-y-2">
+          <h2 className="text-xs font-medium uppercase tracking-wider mb-3" style={{ color: "var(--muted)" }}>
+            Previous Exports
+          </h2>
+          <div className="space-y-1.5">
             {exports.map((exp) => (
               <div
                 key={exp.id}
-                className="flex items-center justify-between rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3"
+                className="flex items-center justify-between rounded border px-4 py-3"
+                style={{ borderColor: "var(--border)", background: "var(--surface)" }}
               >
-                <div>
-                  <span className="text-sm font-medium text-zinc-200 uppercase">
+                <div className="flex items-center gap-3">
+                  <span className="text-xs font-mono font-medium uppercase" style={{ color: "var(--accent)" }}>
                     {exp.format}
                   </span>
-                  <span className="ml-3 text-xs text-zinc-500">
-                    {new Date(exp.created_at).toLocaleString()} &middot;{" "}
-                    {(exp.file_size_bytes / 1024).toFixed(1)} KB
+                  <span className="text-xs text-zinc-600">
+                    {new Date(exp.created_at).toLocaleString("en-IN")} &middot; {(exp.file_size_bytes / 1024).toFixed(1)} KB
                   </span>
                 </div>
                 <button
                   onClick={() => handleDownload(exp.id)}
-                  className="text-xs text-zinc-400 hover:text-zinc-100"
+                  className="text-xs transition-colors"
+                  style={{ color: "var(--accent-dim)" }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent)"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "var(--accent-dim)"; }}
                 >
-                  Download
+                  Download ↓
                 </button>
               </div>
             ))}

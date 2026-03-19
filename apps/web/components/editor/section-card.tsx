@@ -12,15 +12,15 @@ interface SectionCardProps {
   onContentUpdate: (newContent: string) => void;
 }
 
-const SECTION_LABELS: Record<string, string> = {
-  title: "TITLE OF THE INVENTION",
-  field_of_invention: "FIELD OF THE INVENTION",
-  background: "BACKGROUND OF THE INVENTION",
-  summary: "SUMMARY OF THE INVENTION",
-  detailed_description: "DETAILED DESCRIPTION",
-  claims: "CLAIMS",
-  abstract: "ABSTRACT",
-  drawings_description: "BRIEF DESCRIPTION OF DRAWINGS",
+const SECTION_LABELS: Record<string, { title: string; number: string }> = {
+  title: { title: "TITLE OF THE INVENTION", number: "I" },
+  field_of_invention: { title: "FIELD OF THE INVENTION", number: "II" },
+  background: { title: "BACKGROUND OF THE INVENTION", number: "III" },
+  summary: { title: "SUMMARY OF THE INVENTION", number: "IV" },
+  detailed_description: { title: "DETAILED DESCRIPTION", number: "V" },
+  claims: { title: "CLAIMS", number: "VI" },
+  abstract: { title: "ABSTRACT", number: "VII" },
+  drawings_description: { title: "BRIEF DESCRIPTION OF DRAWINGS", number: "VIII" },
 };
 
 export function SectionCard({
@@ -36,11 +36,11 @@ export function SectionCard({
   const [saving, setSaving] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
-  const isLong = content.split("\n").length > 5;
-  const displayContent =
-    !expanded && isLong
-      ? content.split("\n").slice(0, 5).join("\n") + "\n..."
-      : content;
+  const label = SECTION_LABELS[sectionType] || { title: sectionType, number: "?" };
+  const isLong = content.split("\n").length > 8;
+  const displayContent = !expanded && isLong
+    ? content.split("\n").slice(0, 8).join("\n") + "\n..."
+    : content;
 
   async function handleSave() {
     setSaving(true);
@@ -53,32 +53,36 @@ export function SectionCard({
     }
   }
 
-  function handleCancel() {
-    setEditContent(content);
-    setEditing(false);
-  }
-
   return (
-    <div className="rounded-lg border border-zinc-800 bg-zinc-900">
-      <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+    <div
+      className="rounded border transition-all duration-200 group"
+      style={{ borderColor: "var(--border)", background: "var(--surface)" }}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between px-5 py-3 border-b" style={{ borderColor: "var(--border-subtle)" }}>
         <div className="flex items-center gap-3">
-          <h3 className="text-sm font-medium text-zinc-200">
-            {SECTION_LABELS[sectionType] || sectionType}
-          </h3>
-          <span className="inline-flex items-center rounded-full px-2 py-0.5 text-xs bg-zinc-800 text-zinc-400">
-            {aiGenerated && editCount === 0
-              ? "AI Generated"
-              : `Edited (v${editCount})`}
+          <span className="text-xs font-mono w-8" style={{ color: "var(--accent-dim)" }}>
+            {label.number}
           </span>
+          <h3 className="text-xs font-medium uppercase tracking-wider text-zinc-300">
+            {label.title}
+          </h3>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          <span
+            className="text-xs font-mono px-2 py-0.5 rounded"
+            style={{
+              color: aiGenerated && editCount === 0 ? "var(--accent)" : "var(--muted)",
+              background: aiGenerated && editCount === 0 ? "rgba(200, 169, 110, 0.08)" : "var(--surface-raised)",
+            }}
+          >
+            {aiGenerated && editCount === 0 ? "AI" : `v${editCount}`}
+          </span>
           {!editing && (
             <button
-              onClick={() => {
-                setEditContent(content);
-                setEditing(true);
-              }}
-              className="text-xs text-zinc-500 hover:text-zinc-300"
+              onClick={() => { setEditContent(content); setEditing(true); }}
+              className="text-xs px-2 py-1 rounded transition-all opacity-0 group-hover:opacity-100"
+              style={{ color: "var(--muted)", background: "var(--surface-raised)" }}
             >
               Edit
             </button>
@@ -86,26 +90,30 @@ export function SectionCard({
         </div>
       </div>
 
-      <div className="p-4">
+      {/* Content */}
+      <div className="px-5 py-4">
         {editing ? (
-          <div className="space-y-3">
+          <div className="space-y-3 animate-fade-in">
             <textarea
               value={editContent}
               onChange={(e) => setEditContent(e.target.value)}
-              rows={15}
-              className="w-full rounded-md border border-zinc-700 bg-zinc-800 px-3 py-2 text-sm text-zinc-100 font-mono focus:border-zinc-500 focus:outline-none"
+              rows={Math.min(20, editContent.split("\n").length + 3)}
+              className="w-full rounded border bg-transparent px-3 py-3 text-sm leading-relaxed font-mono text-zinc-200 focus:outline-none transition-colors"
+              style={{ borderColor: "var(--accent-dim)" }}
             />
             <div className="flex items-center gap-2 justify-end">
               <button
-                onClick={handleCancel}
-                className="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                onClick={() => { setEditContent(content); setEditing(false); }}
+                className="rounded border px-3 py-1.5 text-xs transition-all"
+                style={{ borderColor: "var(--border)", color: "var(--muted)" }}
               >
                 Cancel
               </button>
               <button
                 onClick={handleSave}
                 disabled={saving}
-                className="rounded-md bg-zinc-100 px-3 py-1.5 text-xs font-medium text-zinc-900 hover:bg-zinc-200 disabled:opacity-50"
+                className="rounded px-4 py-1.5 text-xs font-medium transition-all disabled:opacity-40"
+                style={{ background: "var(--accent)", color: "var(--background)" }}
               >
                 {saving ? "Saving..." : "Save"}
               </button>
@@ -113,23 +121,18 @@ export function SectionCard({
           </div>
         ) : (
           <div>
-            <pre className="whitespace-pre-wrap text-sm text-zinc-300 font-mono leading-relaxed">
+            <pre className="whitespace-pre-wrap text-sm leading-relaxed text-zinc-300 font-[var(--font-geist-sans)]">
               {displayContent}
             </pre>
-            {isLong && !expanded && (
+            {isLong && (
               <button
-                onClick={() => setExpanded(true)}
-                className="mt-2 text-xs text-zinc-500 hover:text-zinc-300"
+                onClick={() => setExpanded(!expanded)}
+                className="mt-3 text-xs font-medium transition-colors"
+                style={{ color: "var(--accent-dim)" }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--accent)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--accent-dim)"; }}
               >
-                Show more
-              </button>
-            )}
-            {expanded && isLong && (
-              <button
-                onClick={() => setExpanded(false)}
-                className="mt-2 text-xs text-zinc-500 hover:text-zinc-300"
-              >
-                Show less
+                {expanded ? "Show less ↑" : "Show more ↓"}
               </button>
             )}
           </div>

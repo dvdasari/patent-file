@@ -29,57 +29,69 @@ export function GenerationStream({ projectId, onComplete }: GenerationStreamProp
   }, [projectId]);
 
   useEffect(() => {
-    if (stream.isComplete) {
-      onComplete();
-    }
+    if (stream.isComplete) onComplete();
   }, [stream.isComplete, onComplete]);
 
+  const progress = stream.totalSections
+    ? (stream.completedSections / stream.totalSections) * 100
+    : 0;
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-6 animate-fade-in">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-zinc-100">
-          Generating Patent Draft...
-        </h2>
-        <span className="text-sm text-zinc-400">
-          {stream.completedSections} / {stream.totalSections || "?"} sections
+        <div>
+          <h2 className="text-base font-medium text-zinc-100">Generating Patent Draft</h2>
+          <p className="text-xs mt-1" style={{ color: "var(--muted)" }}>
+            AI is drafting each section sequentially...
+          </p>
+        </div>
+        <span className="text-sm font-mono" style={{ color: "var(--accent)" }}>
+          {stream.completedSections}/{stream.totalSections || "?"}
         </span>
       </div>
 
       {/* Progress bar */}
-      <div className="h-1 rounded-full bg-zinc-800">
+      <div className="h-0.5 rounded-full" style={{ background: "var(--border)" }}>
         <div
-          className="h-1 rounded-full bg-zinc-400 transition-all"
-          style={{
-            width: stream.totalSections
-              ? `${(stream.completedSections / stream.totalSections) * 100}%`
-              : "0%",
-          }}
+          className="h-0.5 rounded-full transition-all duration-700 ease-out"
+          style={{ width: `${progress}%`, background: "var(--accent)" }}
         />
       </div>
 
       {stream.error && (
-        <div className="rounded-md bg-red-950/50 border border-red-900 px-3 py-2 text-sm text-red-400">
+        <div className="rounded border px-4 py-3 text-sm animate-fade-in"
+          style={{ borderColor: "rgba(239, 68, 68, 0.3)", background: "rgba(239, 68, 68, 0.05)", color: "#f87171" }}>
           {stream.error}
         </div>
       )}
 
-      {/* Show completed + streaming sections */}
-      <div className="space-y-3">
-        {Object.entries(stream.sections).map(([type, section]) => (
-          <div key={type} className="rounded-lg border border-zinc-800 bg-zinc-900 p-4">
+      <div className="space-y-2">
+        {Object.entries(stream.sections).map(([type, section], i) => (
+          <div
+            key={type}
+            className="rounded border p-4 animate-fade-in"
+            style={{
+              borderColor: section.isGenerating ? "var(--accent-dim)" : "var(--border)",
+              background: "var(--surface)",
+              animationDelay: `${i * 50}ms`,
+            }}
+          >
             <div className="flex items-center gap-2 mb-2">
-              <h3 className="text-sm font-medium text-zinc-200">
+              <h3 className="text-xs font-medium uppercase tracking-wider text-zinc-400">
                 {SECTION_LABELS[type] || type}
               </h3>
               {section.isGenerating && (
-                <span className="text-xs text-zinc-500 animate-pulse">generating...</span>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: "var(--accent)" }} />
+                  <span className="text-xs" style={{ color: "var(--accent-dim)" }}>writing...</span>
+                </div>
               )}
               {section.isComplete && (
-                <span className="text-xs text-green-400">done</span>
+                <span className="text-xs text-green-500">✓</span>
               )}
             </div>
-            <pre className="whitespace-pre-wrap text-sm text-zinc-400 font-mono">
-              {section.content || "..."}
+            <pre className="whitespace-pre-wrap text-sm text-zinc-400 leading-relaxed font-[var(--font-geist-sans)]">
+              {section.content.slice(0, 300)}{section.content.length > 300 ? "..." : ""}
             </pre>
           </div>
         ))}

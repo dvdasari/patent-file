@@ -208,6 +208,22 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(export_state);
 
+    // Deadline routes
+    let deadline_routes = Router::new()
+        .route("/api/projects/{id}/deadlines", post(routes::deadlines::create_deadline))
+        .route("/api/projects/{id}/deadlines", get(routes::deadlines::list_deadlines))
+        .route("/api/projects/{id}/deadlines/{deadline_id}", patch(routes::deadlines::update_deadline))
+        .route("/api/projects/{id}/deadlines/{deadline_id}", delete(routes::deadlines::delete_deadline))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::subscription::subscription_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .with_state(pool.clone());
+
     // Search routes (need AI provider + storage)
     let search_engine = std::sync::Arc::new(search::SearchEngine::new(ai_provider.clone()));
     let search_state = SearchState {
@@ -292,6 +308,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(generate_routes)
         .merge(sections_routes)
         .merge(export_routes)
+        .merge(deadline_routes)
         .merge(search_routes)
         .merge(fer_routes)
         .merge(webhook_routes);

@@ -138,6 +138,19 @@ pub struct RateLimit {
     pub request_count: i32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct Deadline {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub title: String,
+    pub description: Option<String>,
+    pub due_date: NaiveDate,
+    pub status: String,
+    pub completed_at: Option<DateTime<Utc>>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
 /// Valid section types for IPO Form 2
 pub const SECTION_TYPES: &[&str] = &[
     "title",

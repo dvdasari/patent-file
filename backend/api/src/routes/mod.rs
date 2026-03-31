@@ -1,5 +1,6 @@
 pub mod applicants;
 pub mod auth;
+pub mod deadlines;
 pub mod export;
 pub mod fer;
 pub mod figures;

@@ -251,6 +251,28 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(pool.clone());
 
+    // Compliance routes (auth + subscription required)
+    let compliance_routes = Router::new()
+        .route("/api/projects/{id}/compliance-check", post(routes::compliance::check_compliance))
+        .route("/api/projects/{id}/compliance-checks", get(routes::compliance::list_compliance_checks))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::subscription::subscription_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .with_state(pool.clone());
+
+    // Case law search (auth required, no subscription needed)
+    let case_law_routes = Router::new()
+        .route("/api/case-law/search", get(routes::compliance::search_case_law))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ));
+
     // Search routes (need AI provider + storage)
     let search_engine = std::sync::Arc::new(search::SearchEngine::new(ai_provider.clone()));
     let search_state = SearchState {
@@ -352,6 +374,8 @@ async fn main() -> anyhow::Result<()> {
         .merge(sections_routes)
         .merge(export_routes)
         .merge(deadline_routes)
+        .merge(compliance_routes)
+        .merge(case_law_routes)
         .merge(search_routes)
         .merge(fer_routes)
         .merge(admin_routes)

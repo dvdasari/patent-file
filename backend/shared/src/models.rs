@@ -167,6 +167,21 @@ pub fn is_valid_section_type(s: &str) -> bool {
     SECTION_TYPES.contains(&s)
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, FromRow)]
+pub struct ComplianceCheck {
+    pub id: Uuid,
+    pub project_id: Uuid,
+    pub run_at: DateTime<Utc>,
+    pub total_warnings: i32,
+    pub total_errors: i32,
+    pub section10_passed: bool,
+    pub section3_passed: bool,
+    pub claims_passed: bool,
+    pub form2_compliant: bool,
+    pub report_json: serde_json::Value,
+    pub created_at: DateTime<Utc>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,6 +1,7 @@
 pub mod admin;
 pub mod applicants;
 pub mod auth;
+pub mod compliance;
 pub mod deadlines;
 pub mod export;
 pub mod fer;

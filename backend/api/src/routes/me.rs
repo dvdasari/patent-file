@@ -11,6 +11,7 @@ pub struct MeResponse {
     pub id: uuid::Uuid,
     pub email: String,
     pub full_name: String,
+    pub role: String,
     pub has_active_subscription: bool,
 }
 
@@ -18,8 +19,8 @@ pub async fn get_me(
     Extension(auth): Extension<AuthUser>,
     State(pool): State<PgPool>,
 ) -> Result<Json<MeResponse>, AppError> {
-    let row = sqlx::query_as::<_, (uuid::Uuid, String, String)>(
-        "SELECT id, email, full_name FROM users WHERE id = $1",
+    let row = sqlx::query_as::<_, (uuid::Uuid, String, String, String)>(
+        "SELECT id, email, full_name, role::text FROM users WHERE id = $1",
     )
     .bind(auth.user_id)
     .fetch_optional(&pool)
@@ -38,6 +39,7 @@ pub async fn get_me(
         id: row.0,
         email: row.1,
         full_name: row.2,
+        role: row.3,
         has_active_subscription,
     }))
 }

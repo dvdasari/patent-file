@@ -7,6 +7,7 @@ interface User {
   id: string;
   email: string;
   full_name: string;
+  role: string;
   has_active_subscription: boolean;
 }
 

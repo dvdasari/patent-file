@@ -37,6 +37,9 @@ enum Commands {
         name: String,
         #[arg(long)]
         with_subscription: bool,
+        /// User role: inventor (default), patent_agent, admin
+        #[arg(long, default_value = "inventor")]
+        role: String,
     },
 }
 
@@ -64,9 +67,10 @@ async fn main() -> anyhow::Result<()> {
         password,
         name,
         with_subscription,
+        role,
     }) = cli.command
     {
-        return seed_user(&pool, &email, &password, &name, with_subscription).await;
+        return seed_user(&pool, &email, &password, &name, with_subscription, &role).await;
     }
 
     // Initialize AI provider
@@ -293,6 +297,21 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(fer_state);
 
+    // Admin routes (auth + role + admin required)
+    let admin_routes = Router::new()
+        .route("/api/admin/users", get(routes::admin::list_users))
+        .route("/api/admin/users/role", patch(routes::admin::update_user_role))
+        .layer(axum_mw::from_fn(middleware::role::require_admin))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::role::role_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .with_state(pool.clone());
+
     // Webhook routes (no auth — signature verified internally)
     let webhook_routes = Router::new()
         .route("/api/webhooks/razorpay", post(routes::webhooks::razorpay_webhook))
@@ -335,6 +354,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(deadline_routes)
         .merge(search_routes)
         .merge(fer_routes)
+        .merge(admin_routes)
         .merge(webhook_routes);
 
     if let Some(static_rt) = static_routes {
@@ -357,7 +377,12 @@ async fn seed_user(
     password: &str,
     name: &str,
     with_subscription: bool,
+    role: &str,
 ) -> anyhow::Result<()> {
+    let valid_roles = ["inventor", "patent_agent", "admin"];
+    if !valid_roles.contains(&role) {
+        anyhow::bail!("Invalid role '{}'. Must be one of: {}", role, valid_roles.join(", "));
+    }
     use argon2::password_hash::{rand_core::OsRng, SaltString};
     use argon2::{Argon2, PasswordHasher};
 
@@ -367,16 +392,20 @@ async fn seed_user(
         .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))?
         .to_string();
 
-    let user_id: uuid::Uuid = sqlx::query_scalar(
-        "INSERT INTO users (email, password_hash, full_name) VALUES ($1, $2, $3)
-         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, full_name = EXCLUDED.full_name
+    // Safe: role is validated against allowlist above
+    let role_cast = format!("'{}'::user_role", role);
+    let query = format!(
+        "INSERT INTO users (email, password_hash, full_name, role) VALUES ($1, $2, $3, {})
+         ON CONFLICT (email) DO UPDATE SET password_hash = EXCLUDED.password_hash, full_name = EXCLUDED.full_name, role = {}
          RETURNING id",
-    )
-    .bind(email)
-    .bind(&hash)
-    .bind(name)
-    .fetch_one(pool)
-    .await?;
+        role_cast, role_cast
+    );
+    let user_id: uuid::Uuid = sqlx::query_scalar(&query)
+        .bind(email)
+        .bind(&hash)
+        .bind(name)
+        .fetch_one(pool)
+        .await?;
 
     println!("Upserted user: {} ({})", email, user_id);
 

@@ -48,6 +48,40 @@ pub struct AuthUser {
     pub user_id: Uuid,
 }
 
+/// Roles supported by the platform.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Role {
+    Inventor,
+    PatentAgent,
+    Admin,
+}
+
+impl Role {
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "inventor" => Some(Self::Inventor),
+            "patent_agent" => Some(Self::PatentAgent),
+            "admin" => Some(Self::Admin),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Inventor => "inventor",
+            Self::PatentAgent => "patent_agent",
+            Self::Admin => "admin",
+        }
+    }
+}
+
+/// Authenticated user with role information (populated by role middleware).
+#[derive(Clone, Debug)]
+pub struct AuthUserWithRole {
+    pub user_id: Uuid,
+    pub role: Role,
+}
+
 /// Issue a JWT access token (24h expiry)
 pub fn issue_access_token(user_id: &Uuid, secret: &str) -> anyhow::Result<String> {
     use jsonwebtoken::{encode, EncodingKey, Header};

@@ -1,3 +1,4 @@
+pub mod admin;
 pub mod applicants;
 pub mod auth;
 pub mod deadlines;

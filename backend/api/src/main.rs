@@ -15,6 +15,7 @@ use routes::export::ExportState;
 use routes::fer::FerState;
 use routes::figures::FiguresState;
 use routes::generate::GenerateState;
+use routes::oauth::OAuthState;
 use routes::search::SearchState;
 
 #[derive(Parser)]
@@ -102,6 +103,28 @@ async fn main() -> anyhow::Result<()> {
         .route("/api/auth/refresh", post(routes::auth::refresh))
         .route("/api/auth/logout", post(routes::auth::logout))
         .with_state(auth_state);
+
+    // OAuth routes (public — provider handles auth)
+    let oauth_state = OAuthState {
+        pool: pool.clone(),
+        jwt_secret: config.jwt_secret.clone(),
+        google_client_id: config.google_client_id.clone(),
+        google_client_secret: config.google_client_secret.clone(),
+        linkedin_client_id: config.linkedin_client_id.clone(),
+        linkedin_client_secret: config.linkedin_client_secret.clone(),
+        redirect_base_url: config.oauth_redirect_base_url.clone(),
+        frontend_url: config.allowed_origin.clone(),
+    };
+    let oauth_routes = Router::new()
+        .route(
+            "/api/auth/oauth/{provider}",
+            get(routes::oauth::oauth_redirect),
+        )
+        .route(
+            "/api/auth/oauth/{provider}/callback",
+            get(routes::oauth::oauth_callback),
+        )
+        .with_state(oauth_state);
 
     // Routes that need auth but NOT subscription (for pre-payment flow)
     let auth_only_routes = Router::new()
@@ -302,6 +325,7 @@ async fn main() -> anyhow::Result<()> {
 
     let mut app = Router::new()
         .merge(public_routes)
+        .merge(oauth_routes)
         .merge(auth_only_routes)
         .merge(protected_routes)
         .merge(figures_routes)

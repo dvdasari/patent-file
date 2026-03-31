@@ -28,6 +28,12 @@ pub struct AppConfig {
     // Patent search
     pub lens_api_key: Option<String>,
     pub patent_search_provider: String,
+    // OAuth
+    pub google_client_id: Option<String>,
+    pub google_client_secret: Option<String>,
+    pub linkedin_client_id: Option<String>,
+    pub linkedin_client_secret: Option<String>,
+    pub oauth_redirect_base_url: String,
 }
 
 impl AppConfig {
@@ -66,6 +72,12 @@ impl AppConfig {
             lens_api_key: get("LENS_API_KEY"),
             patent_search_provider: get("PATENT_SEARCH_PROVIDER")
                 .unwrap_or_else(|| "mock".to_string()),
+            google_client_id: get("GOOGLE_CLIENT_ID"),
+            google_client_secret: get("GOOGLE_CLIENT_SECRET"),
+            linkedin_client_id: get("LINKEDIN_CLIENT_ID"),
+            linkedin_client_secret: get("LINKEDIN_CLIENT_SECRET"),
+            oauth_redirect_base_url: get("OAUTH_REDIRECT_BASE_URL")
+                .unwrap_or_else(|| "http://localhost:5012".to_string()),
         })
     }
 

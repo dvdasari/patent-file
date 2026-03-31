@@ -35,7 +35,7 @@ pub async fn login(
     State(state): State<AuthState>,
     Json(req): Json<LoginRequest>,
 ) -> Result<(AppendHeaders<[(http::HeaderName, String); 2]>, Json<LoginResponse>), AppError> {
-    let user = sqlx::query_as::<_, (uuid::Uuid, String, String, String)>(
+    let user = sqlx::query_as::<_, (uuid::Uuid, String, String, Option<String>)>(
         "SELECT id, email, full_name, password_hash FROM users WHERE email = $1",
     )
     .bind(&req.email)
@@ -44,6 +44,10 @@ pub async fn login(
     .ok_or_else(|| AppError::unauthorized("Invalid email or password"))?;
 
     let (user_id, email, full_name, password_hash) = user;
+
+    // OAuth-only users cannot log in with email/password
+    let password_hash = password_hash
+        .ok_or_else(|| AppError::unauthorized("This account uses social login. Please sign in with Google or LinkedIn."))?;
 
     // Verify password
     let parsed_hash = argon2::PasswordHash::new(&password_hash)

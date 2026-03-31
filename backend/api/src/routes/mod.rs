@@ -8,6 +8,7 @@ pub mod generate;
 pub mod health;
 pub mod interview;
 pub mod me;
+pub mod oauth;
 pub mod patent_search;
 pub mod projects;
 pub mod search;

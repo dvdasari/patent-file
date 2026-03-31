@@ -14,6 +14,7 @@ use routes::auth::AuthState;
 use routes::export::ExportState;
 use routes::figures::FiguresState;
 use routes::generate::GenerateState;
+use routes::search::SearchState;
 
 #[derive(Parser)]
 #[command(name = "patent-draft-pro-api")]
@@ -206,6 +207,29 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(export_state);
 
+    // Search routes (need AI provider + storage)
+    let search_engine = std::sync::Arc::new(search::SearchEngine::new(ai_provider.clone()));
+    let search_state = SearchState {
+        pool: pool.clone(),
+        engine: search_engine,
+        storage: storage.clone(),
+    };
+    let search_routes = Router::new()
+        .route("/api/search", post(routes::search::create_search))
+        .route("/api/searches", get(routes::search::list_searches))
+        .route("/api/searches/{id}", get(routes::search::get_search))
+        .route("/api/searches/{id}/report", post(routes::search::generate_report))
+        .route("/api/search-reports/{id}/download", get(routes::search::download_report))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::subscription::subscription_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .with_state(search_state);
+
     // Webhook routes (no auth — signature verified internally)
     let webhook_routes = Router::new()
         .route("/api/webhooks/razorpay", post(routes::webhooks::razorpay_webhook))
@@ -244,6 +268,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(generate_routes)
         .merge(sections_routes)
         .merge(export_routes)
+        .merge(search_routes)
         .merge(webhook_routes);
 
     if let Some(static_rt) = static_routes {

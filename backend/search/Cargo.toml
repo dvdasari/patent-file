@@ -1,0 +1,18 @@
+[package]
+name = "search"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+shared = { path = "../shared" }
+ai = { path = "../ai" }
+serde.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+sqlx.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+tracing.workspace = true
+reqwest = { version = "0.12", features = ["json"] }
+printpdf = "0.7"

@@ -114,4 +114,78 @@ export const api = {
     request(`/api/projects/${projectId}/exports`),
   getDownloadUrl: (exportId: string) =>
     request<{ url: string }>(`/api/exports/${exportId}/download`),
+
+  // Prior Art Search
+  createSearch: (data: {
+    query: string;
+    ipc_classification?: string;
+    applicant?: string;
+    date_from?: string;
+    date_to?: string;
+    include_npl?: boolean;
+    project_id?: string;
+  }) =>
+    request<SearchResponse>("/api/search", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  listSearches: () =>
+    request<PriorArtSearch[]>("/api/searches"),
+  getSearch: (id: string) =>
+    request<SearchResponse>(`/api/searches/${id}`),
+  generateSearchReport: (searchId: string) =>
+    request<SearchReport>(`/api/searches/${searchId}/report`, {
+      method: "POST",
+    }),
+  downloadSearchReport: (reportId: string) =>
+    request<{ url: string }>(`/api/search-reports/${reportId}/download`),
 };
+
+// Search types
+export interface PriorArtSearch {
+  id: string;
+  user_id: string;
+  project_id: string | null;
+  query_text: string;
+  ipc_classification: string | null;
+  applicant_filter: string | null;
+  date_from: string | null;
+  date_to: string | null;
+  include_npl: boolean;
+  status: string;
+  result_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PriorArtResult {
+  id: string;
+  search_id: string;
+  source: string;
+  external_id: string | null;
+  title: string;
+  applicant: string | null;
+  filing_date: string | null;
+  publication_date: string | null;
+  ipc_codes: string | null;
+  abstract_text: string | null;
+  url: string | null;
+  similarity_score: number;
+  novelty_assessment: string | null;
+  relevance_rank: number;
+  created_at: string;
+}
+
+export interface SearchReport {
+  id: string;
+  search_id: string;
+  format: string;
+  storage_path: string;
+  file_size_bytes: number;
+  created_at: string;
+}
+
+export interface SearchResponse {
+  search: PriorArtSearch;
+  results: PriorArtResult[];
+}

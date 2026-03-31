@@ -13,7 +13,7 @@ out/
 .env*.local
 
 # Local file storage (dev)
-storage/
+/storage/
 
 # IDE
 .vscode/

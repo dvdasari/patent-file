@@ -7,6 +7,7 @@ pub mod health;
 pub mod interview;
 pub mod me;
 pub mod projects;
+pub mod search;
 pub mod sections;
 pub mod subscriptions;
 pub mod webhooks;

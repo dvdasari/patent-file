@@ -30,6 +30,7 @@ export function Navbar() {
           <div className="flex items-center gap-1">
             {[
               { href: "/projects", label: "Projects" },
+              { href: "/search", label: "Prior Art" },
               { href: "/account", label: "Account" },
             ].map((link) => (
               <Link

@@ -9,6 +9,7 @@ storage = { path = "../storage" }
 ai = { path = "../ai" }
 search = { path = "../search" }
 fer = { path = "../fer" }
+export = { path = "../export" }
 axum = { version = "0.8", features = ["multipart"] }
 http = "1"
 tokio.workspace = true

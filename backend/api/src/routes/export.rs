@@ -30,38 +30,28 @@ pub async fn create_export(
     }
 
     // Verify ownership
-    let exists: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM projects WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL)",
+    let project = sqlx::query_as::<_, shared::models::Project>(
+        "SELECT * FROM projects WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL",
     )
     .bind(project_id)
     .bind(auth.user_id)
-    .fetch_one(&state.pool)
-    .await?;
+    .fetch_optional(&state.pool)
+    .await?
+    .ok_or_else(|| AppError::not_found("Project not found"))?;
 
-    if !exists {
-        return Err(AppError::not_found("Project not found"));
-    }
-
-    // Check all required sections exist
-    let section_count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM patent_sections WHERE project_id = $1",
+    // Load all sections
+    let sections = sqlx::query_as::<_, shared::models::PatentSection>(
+        "SELECT * FROM patent_sections WHERE project_id = $1",
     )
     .bind(project_id)
-    .fetch_one(&state.pool)
+    .fetch_all(&state.pool)
     .await?;
 
-    if section_count < 8 {
-        let existing: Vec<String> = sqlx::query_scalar(
-            "SELECT section_type FROM patent_sections WHERE project_id = $1",
-        )
-        .bind(project_id)
-        .fetch_all(&state.pool)
-        .await?;
-
-        let all_types = shared::models::SECTION_TYPES;
-        let missing: Vec<&str> = all_types
+    if sections.len() < 8 {
+        let existing: Vec<&str> = sections.iter().map(|s| s.section_type.as_str()).collect();
+        let missing: Vec<&str> = shared::models::SECTION_TYPES
             .iter()
-            .filter(|t| !existing.contains(&t.to_string()))
+            .filter(|t| !existing.contains(t))
             .copied()
             .collect();
 
@@ -71,12 +61,60 @@ pub async fn create_export(
         )));
     }
 
-    // Generate export (placeholder — real implementation uses typst/docx-rs)
-    let content = format!("Patent export in {} format for project {}", req.format, project_id);
-    let storage_key = format!("exports/{}/{}.{}", project_id, uuid::Uuid::new_v4(), req.format);
-    let data = content.as_bytes();
+    // Load applicant info
+    let applicant = sqlx::query_as::<_, shared::models::ProjectApplicant>(
+        "SELECT * FROM project_applicants WHERE project_id = $1",
+    )
+    .bind(project_id)
+    .fetch_optional(&state.pool)
+    .await?;
 
-    state.storage.upload(&storage_key, data, "application/octet-stream").await?;
+    // Build patent document
+    let section_pairs: Vec<(String, String)> = sections
+        .iter()
+        .map(|s| (s.section_type.clone(), s.content.clone()))
+        .collect();
+
+    let applicant_info = applicant.map(|a| export::ApplicantInfo {
+        applicant_name: a.applicant_name,
+        applicant_address: a.applicant_address,
+        applicant_nationality: a.applicant_nationality,
+        inventor_name: a.inventor_name,
+        inventor_address: a.inventor_address,
+        inventor_nationality: a.inventor_nationality,
+        agent_name: a.agent_name,
+        agent_registration_no: a.agent_registration_no,
+        assignee_name: a.assignee_name,
+        priority_date: a.priority_date,
+        priority_country: a.priority_country,
+        priority_application_no: a.priority_application_no,
+    });
+
+    let patent_doc = export::PatentDocument::from_sections(
+        &section_pairs,
+        applicant_info,
+        &project.patent_type,
+    )
+    .map_err(|e| AppError::bad_request(format!("Failed to build document: {e}")))?;
+
+    // Generate the document
+    let (data, content_type) = match req.format.as_str() {
+        "pdf" => {
+            let bytes = export::generate_pdf(&patent_doc)
+                .map_err(|e| AppError::internal(format!("PDF generation failed: {e}")))?;
+            (bytes, "application/pdf")
+        }
+        "docx" => {
+            // DOCX not yet implemented — return a placeholder
+            let placeholder = format!("Patent DOCX export for project {project_id} — DOCX generation coming soon.");
+            (placeholder.into_bytes(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        }
+        _ => unreachable!(),
+    };
+
+    let storage_key = format!("exports/{}/{}.{}", project_id, uuid::Uuid::new_v4(), req.format);
+
+    state.storage.upload(&storage_key, &data, content_type).await?;
 
     let export = sqlx::query_as::<_, shared::models::Export>(
         "INSERT INTO exports (project_id, format, storage_path, file_size_bytes) VALUES ($1, $2, $3, $4) RETURNING *",

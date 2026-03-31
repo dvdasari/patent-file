@@ -31,6 +31,7 @@ export function Navbar() {
             {[
               { href: "/projects", label: "Projects" },
               { href: "/search", label: "Prior Art" },
+              { href: "/fer", label: "FER Assistant" },
               { href: "/account", label: "Account" },
             ].map((link) => (
               <Link

@@ -139,6 +139,30 @@ export const api = {
     }),
   downloadSearchReport: (reportId: string) =>
     request<{ url: string }>(`/api/search-reports/${reportId}/download`),
+
+  // FER Analysis
+  createFer: (data: {
+    fer_text: string;
+    title?: string;
+    application_number?: string;
+    fer_date?: string;
+    project_id?: string;
+  }) =>
+    request<FerAnalysis>("/api/fer", {
+      method: "POST",
+      body: JSON.stringify(data),
+    }),
+  listFer: () => request<FerAnalysis[]>("/api/fer"),
+  getFer: (id: string) => request<FerAnalysisDetail>(`/api/fer/${id}`),
+  updateFerResponse: (responseId: string, data: { user_edited_text: string }) =>
+    request<FerResponseItem>(`/api/fer/responses/${responseId}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    }),
+  acceptFerResponse: (responseId: string) =>
+    request<FerResponseItem>(`/api/fer/responses/${responseId}/accept`, {
+      method: "POST",
+    }),
 };
 
 // Search types
@@ -188,4 +212,50 @@ export interface SearchReport {
 export interface SearchResponse {
   search: PriorArtSearch;
   results: PriorArtResult[];
+}
+
+// FER types
+export interface FerAnalysis {
+  id: string;
+  user_id: string;
+  project_id: string | null;
+  title: string;
+  fer_text: string;
+  application_number: string | null;
+  fer_date: string | null;
+  examiner_name: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FerObjection {
+  id: string;
+  analysis_id: string;
+  objection_number: number;
+  category: string;
+  section_reference: string | null;
+  summary: string;
+  full_text: string;
+  created_at: string;
+}
+
+export interface FerResponseItem {
+  id: string;
+  objection_id: string;
+  legal_arguments: string;
+  claim_amendments: string;
+  case_law_citations: string;
+  status: string;
+  user_edited_text: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ObjectionWithResponse extends FerObjection {
+  response: FerResponseItem | null;
+}
+
+export interface FerAnalysisDetail extends FerAnalysis {
+  objections: ObjectionWithResponse[];
 }

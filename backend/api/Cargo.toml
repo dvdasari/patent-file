@@ -8,6 +8,7 @@ shared = { path = "../shared" }
 storage = { path = "../storage" }
 ai = { path = "../ai" }
 search = { path = "../search" }
+fer = { path = "../fer" }
 axum = { version = "0.8", features = ["multipart"] }
 http = "1"
 tokio.workspace = true

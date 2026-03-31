@@ -12,6 +12,7 @@ use tracing_subscriber::EnvFilter;
 
 use routes::auth::AuthState;
 use routes::export::ExportState;
+use routes::fer::FerState;
 use routes::figures::FiguresState;
 use routes::generate::GenerateState;
 use routes::search::SearchState;
@@ -230,6 +231,29 @@ async fn main() -> anyhow::Result<()> {
         ))
         .with_state(search_state);
 
+    // FER routes (need AI provider)
+    let fer_state = FerState {
+        pool: pool.clone(),
+        provider: ai_provider.clone(),
+    };
+    let fer_routes = Router::new()
+        .route("/api/fer", post(routes::fer::create_fer))
+        .route("/api/fer", get(routes::fer::list_fer))
+        .route("/api/fer/{id}", get(routes::fer::get_fer))
+        .route("/api/fer/{id}/generate", post(routes::fer::generate_responses))
+        .route("/api/fer/responses/{id}", patch(routes::fer::update_response))
+        .route("/api/fer/responses/{id}/accept", post(routes::fer::accept_response))
+        .route("/api/fer/responses/{id}/regenerate", post(routes::fer::regenerate_response))
+        .layer(axum_mw::from_fn_with_state(
+            pool.clone(),
+            middleware::subscription::subscription_middleware,
+        ))
+        .layer(axum_mw::from_fn_with_state(
+            jwt_secret.clone(),
+            middleware::auth::auth_middleware,
+        ))
+        .with_state(fer_state);
+
     // Webhook routes (no auth — signature verified internally)
     let webhook_routes = Router::new()
         .route("/api/webhooks/razorpay", post(routes::webhooks::razorpay_webhook))
@@ -269,6 +293,7 @@ async fn main() -> anyhow::Result<()> {
         .merge(sections_routes)
         .merge(export_routes)
         .merge(search_routes)
+        .merge(fer_routes)
         .merge(webhook_routes);
 
     if let Some(static_rt) = static_routes {

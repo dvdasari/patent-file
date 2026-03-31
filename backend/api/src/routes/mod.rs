@@ -1,6 +1,7 @@
 pub mod applicants;
 pub mod auth;
 pub mod export;
+pub mod fer;
 pub mod figures;
 pub mod generate;
 pub mod health;

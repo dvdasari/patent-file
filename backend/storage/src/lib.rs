@@ -5,6 +5,7 @@ use std::sync::Arc;
 pub trait StorageClient: Send + Sync {
     async fn upload(&self, key: &str, data: &[u8], content_type: &str) -> Result<()>;
     async fn download_url(&self, key: &str, expires_secs: u64) -> Result<String>;
+    async fn delete(&self, key: &str) -> Result<()>;
 }
 
 pub struct LocalStorageClient {
@@ -35,6 +36,14 @@ impl StorageClient for LocalStorageClient {
 
     async fn download_url(&self, key: &str, _expires_secs: u64) -> Result<String> {
         Ok(format!("http://localhost:{}/files/{}", self.port, key))
+    }
+
+    async fn delete(&self, key: &str) -> Result<()> {
+        let path = format!("{}/{}", self.base_path, key);
+        if std::path::Path::new(&path).exists() {
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
     }
 }
 

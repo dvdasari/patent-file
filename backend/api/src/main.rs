@@ -184,7 +184,7 @@ async fn main() -> anyhow::Result<()> {
     // Generate + sections routes (need AI provider)
     let generate_state = GenerateState {
         pool: pool.clone(),
-        provider: ai_provider,
+        provider: ai_provider.clone(),
     };
     let generate_routes = Router::new()
         .route("/api/projects/{id}/generate", post(routes::generate::generate))

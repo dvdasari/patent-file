@@ -151,7 +151,7 @@ impl InpassClient {
                 let title = r.title.filter(|t| !t.is_empty())?;
                 Some(RawPatentResult {
                     source: "inpass".to_string(),
-                    external_id: r.application_number,
+                    external_id: r.application_number.clone(),
                     title,
                     applicant: r.applicant_name,
                     filing_date: r

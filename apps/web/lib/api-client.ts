@@ -104,6 +104,30 @@ export const api = {
       { method: "POST" }
     ),
 
+  // Patent search (prior art)
+  searchPatents: (params: { q: string; page?: number; per_page?: number }) => {
+    const qs = new URLSearchParams({ q: params.q });
+    if (params.page) qs.set("page", String(params.page));
+    if (params.per_page) qs.set("per_page", String(params.per_page));
+    return request<{
+      results: Array<{
+        patent_number: string;
+        title: string;
+        abstract_text: string | null;
+        applicants: string[];
+        inventors: string[];
+        filing_date: string | null;
+        publication_date: string | null;
+        jurisdiction: string;
+        url: string | null;
+      }>;
+      total: number;
+      page: number;
+      per_page: number;
+      query: string;
+    }>(`/api/patents/search?${qs.toString()}`);
+  },
+
   // Export
   createExport: (projectId: string, format: string) =>
     request(`/api/projects/${projectId}/export`, {

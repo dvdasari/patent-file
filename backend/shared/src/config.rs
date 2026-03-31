@@ -25,6 +25,9 @@ pub struct AppConfig {
     pub razorpay_plan_id: String,
     // CORS
     pub allowed_origin: String,
+    // Patent search
+    pub lens_api_key: Option<String>,
+    pub patent_search_provider: String,
 }
 
 impl AppConfig {
@@ -60,6 +63,9 @@ impl AppConfig {
             razorpay_plan_id: require("RAZORPAY_PLAN_ID")?,
             allowed_origin: get("ALLOWED_ORIGIN")
                 .unwrap_or_else(|| "http://localhost:3000".to_string()),
+            lens_api_key: get("LENS_API_KEY"),
+            patent_search_provider: get("PATENT_SEARCH_PROVIDER")
+                .unwrap_or_else(|| "mock".to_string()),
         })
     }
 
